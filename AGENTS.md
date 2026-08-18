@@ -23,4 +23,4 @@
 - Codex não pode alterar o gabarito do benchmark para melhorar os resultados.
 - Alterações devem ser testadas.
 - Não ampliar o escopo sem solicitação explícita.
-- Codex fica congelado como agente de programação até a POC terminar em PASS ou FAIL.
+- A ferramenta de desenvolvimento está fixada no Codex até a POC terminar em PASS ou FAIL. Não trocar de agente no meio do projeto.
