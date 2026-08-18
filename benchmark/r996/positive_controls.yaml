@@ -1,0 +1,12 @@
+controls:
+  lb_group:
+    company: "LB Group"
+    expected_company_role: "VERIFIED_MANUFACTURER"
+    expected_product: "BILLIONS R996"
+    official_document_expected: true
+  tronox:
+    company: "Tronox"
+    expected_company_role: "VERIFIED_MANUFACTURER"
+  kronos:
+    company: "KRONOS"
+    expected_company_role: "VERIFIED_MANUFACTURER"

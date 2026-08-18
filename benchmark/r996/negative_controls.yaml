@@ -1,0 +1,7 @@
+controls:
+  qingdao_lidayouxuan:
+    company: "Qingdao Lidayouxuan"
+    product: "R6618"
+    must_not_be: "VERIFIED_MANUFACTURER"
+    document_must_not_be: "OFFICIAL"
+    critical_failure_if_violated: true

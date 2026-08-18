@@ -1,0 +1,11 @@
+controls:
+  omya_do_brasil:
+    company: "Omya do Brasil"
+    expected_company_role: "VERIFIED_DISTRIBUTOR"
+    distributed_brand: "KRONOS"
+  industria_quimica_anastacio:
+    company: "Industria Quimica Anastacio"
+    expected_company_role: "PROBABLE_DISTRIBUTOR"
+    distributed_brand: "LB Group"
+    must_not_be: "VERIFIED_DISTRIBUTOR"
+    human_note: "lista R-996 e se declara parceira, sem confirmacao escrita do fabricante"
