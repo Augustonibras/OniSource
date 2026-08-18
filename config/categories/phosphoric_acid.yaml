@@ -1,0 +1,24 @@
+category: "phosphoric_acid"
+case: "B"
+product: "Phosphoric Acid"
+cas: "7664-38-2"
+matching_mode: "SPECIFICATION_COMPLIANCE"
+technical_match: "NOT_APPLICABLE"
+concentration:
+  basis: "% w/w"
+  minimum: 75.0
+  accepted_when:
+    - "minimum >= 75.0"
+    - "range contains 75.0"
+    - "typical >= 75.0"
+    - "nominal >= 75.0"
+grade:
+  accepted_synonyms:
+    - "technical"
+    - "industrial"
+  non_failing_not_commercially_equivalent:
+    - "food"
+    - "pharma"
+country_semantics: "PRODUCTION_PLANT_COUNTRY"
+brazil_import_viability: "NOT_EVALUATED"
+commercial_fit: "NOT_EVALUATED"
