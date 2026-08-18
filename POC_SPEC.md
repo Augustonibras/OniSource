@@ -32,6 +32,20 @@ Na Fase 0:
 - `Brazil Import Viability = NOT_EVALUATED`;
 - `Commercial Fit = NOT_EVALUATED`.
 
+### 2.1 Comportamento agnóstico de categoria
+
+O OniSource deve aceitar qualquer categoria de matéria-prima, inclusive categorias sem arquivo de configuração.
+
+Quando não existir configuração para a categoria:
+
+- `hard_constraints = NOT_DEFINED`;
+- `weighted_properties = NOT_DEFINED`;
+- `Technical Match = TBD`;
+- o sistema NUNCA pode inferir, gerar ou propor hard constraints por conta própria;
+- o sistema deve reportar explicitamente que a categoria não está configurada.
+
+`titanium_dioxide` e `phosphoric_acid` são casos de teste da Fase 0, não o escopo do produto.
+
 ## 3. Regras normativas
 
 Os termos `DEVE`, `NÃO DEVE` e `PODE` são normativos.
