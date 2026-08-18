@@ -1,0 +1,26 @@
+# OniSource
+
+- O projeto se chama OniSource.
+- É uma ferramenta INTERNA de inteligência de sourcing.
+- Estamos somente na Fase 0 de prova de conceito.
+- Simplicidade é prioridade.
+- Não criar frontend.
+- Não criar aplicação web.
+- Não criar banco de dados.
+- Não criar Docker.
+- Não criar Redis.
+- Não criar autenticação.
+- Não criar SaaS.
+- Não criar billing.
+- Não criar CRM.
+- Não criar envio automático de emails.
+- Toda informação externa precisa de evidência.
+- Ausência de evidência deve resultar em UNKNOWN.
+- Nunca inventar especificações.
+- Nunca inferir que uma empresa é fabricante apenas pelo domínio ou aparência do site.
+- Falso positivo de fabricante é considerado pior que falso negativo.
+- Benchmark ground truth deve ser fornecido por humanos.
+- Codex não pode alterar o gabarito do benchmark para melhorar os resultados.
+- Alterações devem ser testadas.
+- Não ampliar o escopo sem solicitação explícita.
+- Codex fica congelado como agente de programação até a POC terminar em PASS ou FAIL.
