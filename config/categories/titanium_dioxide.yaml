@@ -2,9 +2,27 @@ category: "titanium_dioxide"
 case: "A"
 reference_product: "BILLIONS R996 Titanium Dioxide"
 matching_mode: "TECHNICAL_MATCH"
-hard_constraints: "TBD_HUMAN"
-weighted_properties: "TBD_HUMAN"
-weights: "TBD"
+hard_constraints:
+  crystal_form: "rutile"
+  product_category: "titanium_dioxide_pigment"
+  application_must_support: "coatings"
+weighted_properties:
+  tio2_content:
+    weight: "TBD_HUMAN"
+  process_route:
+    weight: "TBD_HUMAN"
+  surface_treatment:
+    weight: "TBD_HUMAN"
+  tinting_strength:
+    weight: "TBD_HUMAN"
+  oil_absorption:
+    weight: "TBD_HUMAN"
+  density:
+    weight: "TBD_HUMAN"
+  particle_size:
+    weight: "TBD_HUMAN"
+  undertone:
+    weight: "TBD_HUMAN"
 evidence_confidence_formula: "TBD_HUMAN"
 brazil_import_viability: "NOT_EVALUATED"
 commercial_fit: "NOT_EVALUATED"

@@ -14,6 +14,8 @@ from src.models import (
 from src.technical_matching import (
     HardConstraint,
     WeightedProperty,
+    evaluate_exact_hard_constraint,
+    evaluate_membership_hard_constraint,
     evaluate_phosphoric_acid_concentration,
     evaluate_phosphoric_acid_grade,
     evaluate_specification_compliance,
@@ -94,6 +96,108 @@ def test_human_supplied_formula_can_be_used() -> None:
     )
 
     assert result.technical_match == pytest.approx(0.8)
+
+
+def test_anatase_candidate_is_eliminated_by_crystal_form() -> None:
+    result = evaluate_technical_match(
+        hard_constraints=[
+            evaluate_exact_hard_constraint(
+                property_name="crystal_form",
+                expected="rutile",
+                actual="anatase",
+            )
+        ],
+        weighted_properties=TBD,
+    )
+
+    assert result.hard_constraints_status is ComplianceStatus.FAIL
+    assert result.eligible is False
+
+
+def test_candidate_without_coatings_support_is_eliminated() -> None:
+    result = evaluate_technical_match(
+        hard_constraints=[
+            evaluate_membership_hard_constraint(
+                property_name="application_must_support",
+                expected="coatings",
+                actual_values=["plastics"],
+            )
+        ],
+        weighted_properties=TBD,
+    )
+
+    assert result.hard_constraints_status is ComplianceStatus.FAIL
+    assert result.eligible is False
+
+
+def test_candidate_meeting_all_hard_constraints_is_not_eliminated() -> None:
+    result = evaluate_technical_match(
+        hard_constraints=[
+            evaluate_exact_hard_constraint(
+                property_name="crystal_form", expected="rutile", actual="rutile"
+            ),
+            evaluate_exact_hard_constraint(
+                property_name="product_category",
+                expected="titanium_dioxide_pigment",
+                actual="titanium_dioxide_pigment",
+            ),
+            evaluate_membership_hard_constraint(
+                property_name="application_must_support",
+                expected="coatings",
+                actual_values=["coatings"],
+            ),
+        ],
+        weighted_properties=TBD,
+    )
+
+    assert result.hard_constraints_status is ComplianceStatus.PASS
+    assert result.eligible is True
+    assert result.technical_match == TBD
+
+
+def test_low_tio2_content_does_not_eliminate_candidate() -> None:
+    weighted_property = WeightedProperty(
+        property_name="tio2_content",
+        weight="TBD_HUMAN",
+        property_match=0.1,
+    )
+    result = evaluate_technical_match(
+        hard_constraints=[
+            evaluate_exact_hard_constraint(
+                property_name="crystal_form", expected="rutile", actual="rutile"
+            ),
+            evaluate_exact_hard_constraint(
+                property_name="product_category",
+                expected="titanium_dioxide_pigment",
+                actual="titanium_dioxide_pigment",
+            ),
+            evaluate_membership_hard_constraint(
+                property_name="application_must_support",
+                expected="coatings",
+                actual_values=["coatings"],
+            ),
+        ],
+        weighted_properties=[weighted_property],
+    )
+
+    assert result.eligible is True
+    assert result.technical_match == TBD
+    assert result.weighted_properties == (weighted_property,)
+    assert weighted_property.weight == "TBD_HUMAN"
+
+
+def test_unknown_hard_constraint_value_never_approves_candidate() -> None:
+    result = evaluate_technical_match(
+        hard_constraints=[
+            evaluate_exact_hard_constraint(
+                property_name="crystal_form", expected="rutile", actual=UNKNOWN
+            )
+        ],
+        weighted_properties=TBD,
+    )
+
+    assert result.hard_constraints_status is ComplianceStatus.UNKNOWN
+    assert result.eligible == UNKNOWN
 
 
 @pytest.mark.parametrize(

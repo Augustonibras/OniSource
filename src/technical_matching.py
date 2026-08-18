@@ -19,7 +19,7 @@ class HardConstraint:
     property_name: str
     status: ComplianceStatus
     expected: Scalar = TBD
-    actual: Scalar = UNKNOWN
+    actual: Scalar | tuple[Scalar, ...] = UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +52,45 @@ class TechnicalMatchResult:
 
 
 ScoreFormula = Callable[[tuple[WeightedProperty, ...]], float]
+
+
+def evaluate_exact_hard_constraint(
+    *, property_name: str, expected: Scalar, actual: Scalar
+) -> HardConstraint:
+    if actual == UNKNOWN:
+        status = ComplianceStatus.UNKNOWN
+    elif actual == expected:
+        status = ComplianceStatus.PASS
+    else:
+        status = ComplianceStatus.FAIL
+    return HardConstraint(
+        property_name=property_name,
+        status=status,
+        expected=expected,
+        actual=actual,
+    )
+
+
+def evaluate_membership_hard_constraint(
+    *, property_name: str, expected: Scalar, actual_values: Iterable[Scalar] | str
+) -> HardConstraint:
+    if actual_values == UNKNOWN:
+        return HardConstraint(
+            property_name=property_name,
+            status=ComplianceStatus.UNKNOWN,
+            expected=expected,
+            actual=UNKNOWN,
+        )
+
+    values = tuple(actual_values) if not isinstance(actual_values, str) else (actual_values,)
+    return HardConstraint(
+        property_name=property_name,
+        status=(
+            ComplianceStatus.PASS if expected in values else ComplianceStatus.FAIL
+        ),
+        expected=expected,
+        actual=values,
+    )
 
 
 def evaluate_technical_match(

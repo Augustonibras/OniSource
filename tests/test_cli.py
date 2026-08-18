@@ -17,8 +17,24 @@ def test_category_configs_are_loadable_without_yaml_dependency() -> None:
     titanium = load_category("titanium_dioxide")
     phosphoric = load_category("phosphoric_acid")
 
-    assert titanium["weights"] == "TBD"
-    assert titanium["hard_constraints"] == "TBD_HUMAN"
+    assert titanium["hard_constraints"] == {
+        "crystal_form": "rutile",
+        "product_category": "titanium_dioxide_pigment",
+        "application_must_support": "coatings",
+    }
+    assert set(titanium["weighted_properties"]) == {
+        "tio2_content",
+        "process_route",
+        "surface_treatment",
+        "tinting_strength",
+        "oil_absorption",
+        "density",
+        "particle_size",
+        "undertone",
+    }
+    assert {
+        item["weight"] for item in titanium["weighted_properties"].values()
+    } == {"TBD_HUMAN"}
     assert phosphoric["matching_mode"] == "SPECIFICATION_COMPLIANCE"
     assert phosphoric["technical_match"] == "NOT_APPLICABLE"
     assert phosphoric["country_semantics"] == "PRODUCTION_PLANT_COUNTRY"
