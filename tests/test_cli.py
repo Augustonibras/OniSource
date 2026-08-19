@@ -24,6 +24,7 @@ def test_category_configs_are_loadable_without_yaml_dependency() -> None:
         "application_must_support": "coatings",
     }
     assert titanium["cas_numbers"] == ["13463-67-7", "1317-80-2"]
+    assert titanium["branded"] is True
     assert set(titanium["weighted_properties"]) == {
         "tio2_content",
         "process_route",
@@ -39,6 +40,7 @@ def test_category_configs_are_loadable_without_yaml_dependency() -> None:
     } == {"TBD_HUMAN"}
     assert phosphoric["matching_mode"] == "SPECIFICATION_COMPLIANCE"
     assert phosphoric["cas_number"] == "7664-38-2"
+    assert phosphoric["branded"] is False
     assert phosphoric["technical_match"] == "NOT_APPLICABLE"
     assert phosphoric["country_semantics"] == "PRODUCTION_PLANT_COUNTRY"
 
@@ -72,8 +74,26 @@ def test_cli_search_dry_run_prints_queries_without_network() -> None:
     payload = json.loads(completed.stdout)
 
     assert payload["dry_run"] is True
-    assert payload["estimated_credits"] == 14
-    assert len(payload["queries"]) == 7
+    assert payload["estimated_credits"] == 10
+    assert len(payload["queries"]) == 5
+
+
+def test_cli_forces_utf8_without_altering_unicode_text() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "research.py",
+            "search",
+            "Product ≥ 99%",
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert "Product ≥ 99% manufacturer" in completed.stdout
 
 
 def test_case_b_dry_run_uses_human_cas_from_category_config() -> None:
@@ -82,4 +102,6 @@ def test_case_b_dry_run_uses_human_cas_from_category_config() -> None:
     payload = dry_run_search_payload("Phosphoric Acid", "Phosphoric Acid")
 
     assert "7664-38-2 manufacturer" in payload["queries"]
+    assert "Phosphoric Acid equivalent" not in payload["queries"]
+    assert "Phosphoric Acid alternative" not in payload["queries"]
     assert payload["estimated_credits"] == len(payload["queries"]) * 2

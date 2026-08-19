@@ -1,6 +1,7 @@
 category: "titanium_dioxide"
 case: "A"
 reference_product: "BILLIONS R996 Titanium Dioxide"
+branded: true
 cas_numbers:
   - "13463-67-7"
   - "1317-80-2"

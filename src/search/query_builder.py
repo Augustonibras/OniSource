@@ -33,6 +33,7 @@ _ALLOWED_ROLE_TERMS = {
     "technical data sheet",
     "supplier",
 }
+_BRANDED_ONLY_ROLE_TERMS = {"equivalent", "alternative"}
 _INTERNAL_MP_CODE = re.compile(r"\bMP\s*\d{1,3}\b", re.IGNORECASE)
 _BARE_INTERNAL_CODE = re.compile(r"^\d{1,3}$")
 
@@ -145,6 +146,14 @@ def _validate_template(
         )
 
 
+def _template_fixed_text(template: str) -> str:
+    literal_parts = [
+        literal_text
+        for literal_text, _, _, _ in string.Formatter().parse(template)
+    ]
+    return " ".join("".join(literal_parts).split()).casefold()
+
+
 def _validate_resolved_product_name(product_name: str) -> str:
     normalized = " ".join(product_name.split())
     if not normalized:
@@ -184,6 +193,17 @@ def _configured_cas_numbers(
     return normalized_values
 
 
+def _configured_branded(
+    category_config: Mapping[str, object] | None,
+) -> bool:
+    if category_config is None or "branded" not in category_config:
+        return False
+    branded = category_config["branded"]
+    if not isinstance(branded, bool):
+        raise ValueError("category branded must be true or false")
+    return branded
+
+
 def build_search_queries(
     product_name: str,
     category: str | None = None,
@@ -194,6 +214,7 @@ def build_search_queries(
     resolved_product_name = _validate_resolved_product_name(product_name)
     normalized_category = " ".join(category.split()) if category else ""
     cas_numbers = _configured_cas_numbers(category_config)
+    branded = _configured_branded(category_config)
 
     templates = load_query_templates(template_path)
     values = {
@@ -209,6 +230,12 @@ def build_search_queries(
         if section == "cas_templates" and not cas_numbers:
             continue
         for template in templates[section]:
+            if (
+                section == "base_templates"
+                and _template_fixed_text(template) in _BRANDED_ONLY_ROLE_TERMS
+                and not branded
+            ):
+                continue
             required_fields = {
                 field_name
                 for _, field_name, _, _ in string.Formatter().parse(template)

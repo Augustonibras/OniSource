@@ -9,11 +9,13 @@ import requests
 
 from .audit import RunRecorder
 from .budget import SearchBudget
+from .domain_filter import DEFAULT_NOISE_DOMAINS_PATH, SearchDomainFilter
 from .errors import (
     AuthError,
     CreditsExhaustedError,
     MalformedResponseError,
     RateLimitError,
+    SearchProviderError,
     SearchTimeoutError,
     SearchTransportError,
     UnexpectedHTTPStatusError,
@@ -63,6 +65,7 @@ class TavilySearchProvider(SearchProvider):
         self,
         *,
         env_path: str | Path = ".env",
+        noise_domains_path: str | Path = DEFAULT_NOISE_DOMAINS_PATH,
         session: requests.Session | None = None,
         budget: SearchBudget | None = None,
         run_recorder: RunRecorder | None = None,
@@ -72,6 +75,7 @@ class TavilySearchProvider(SearchProvider):
         now: Callable[[], str] = utc_now_iso,
     ) -> None:
         self._api_key = load_tavily_api_key(env_path)
+        self._domain_filter = SearchDomainFilter(noise_domains_path)
         self._session = session or requests.Session()
         self._budget = budget or SearchBudget()
         self._run_recorder = run_recorder or RunRecorder()
@@ -106,30 +110,70 @@ class TavilySearchProvider(SearchProvider):
             "search_depth": self.search_depth,
             "max_results": max_results,
             "include_raw_content": True,
+            "exclude_domains": list(self._domain_filter.exclude_domains),
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+        retries = 0
+        error_counts: dict[str, int] = {}
 
         for attempt in range(1, MAX_RATE_LIMIT_ATTEMPTS + 1):
-            response = self._post(payload, headers)
+            try:
+                response = self._post(payload, headers)
+            except (SearchTimeoutError, SearchTransportError) as error:
+                self._increment_error(error_counts, error)
+                self._record_failure(
+                    query=query,
+                    max_results=max_results,
+                    charged_credits=charged_credits,
+                    retries=retries,
+                    error_counts=error_counts,
+                    error=error,
+                )
+                raise
             if response.status_code == 429:
+                error_counts[RateLimitError.__name__] = (
+                    error_counts.get(RateLimitError.__name__, 0) + 1
+                )
                 if attempt == MAX_RATE_LIMIT_ATTEMPTS:
-                    raise RateLimitError(
+                    error = RateLimitError(
                         f"Tavily returned HTTP 429 after {attempt} attempts"
                     )
+                    self._record_failure(
+                        query=query,
+                        max_results=max_results,
+                        charged_credits=charged_credits,
+                        retries=retries,
+                        error_counts=error_counts,
+                        error=error,
+                    )
+                    raise error
+                retries += 1
                 self._sleep(self._backoff_seconds * (2 ** (attempt - 1)))
                 continue
-            self._raise_for_status(response.status_code)
-            raw_response = self._parse_json(response)
-            retrieved_at = self._now()
-            results = self.normalize_raw_response(
-                raw_response,
-                query=query,
-                retrieved_at=retrieved_at,
-                max_results=max_results,
-            )
+            try:
+                self._raise_for_status(response.status_code)
+                raw_response = self._parse_json(response)
+                retrieved_at = self._now()
+                results = self.normalize_raw_response(
+                    raw_response,
+                    query=query,
+                    retrieved_at=retrieved_at,
+                    max_results=max_results,
+                )
+            except SearchProviderError as error:
+                self._increment_error(error_counts, error)
+                self._record_failure(
+                    query=query,
+                    max_results=max_results,
+                    charged_credits=charged_credits,
+                    retries=retries,
+                    error_counts=error_counts,
+                    error=error,
+                )
+                raise
             self._last_raw_response = raw_response
             self._last_retrieved_at = retrieved_at
             self._run_recorder.record_success(
@@ -142,10 +186,44 @@ class TavilySearchProvider(SearchProvider):
                 charged_credits=charged_credits,
                 execution_credits=self._budget.execution_credits,
                 monthly_credits=self._budget.monthly_credits(),
+                retries=retries,
+                error_counts=error_counts,
             )
             return results
 
         raise RateLimitError("Tavily rate-limit attempts were exhausted")
+
+    @staticmethod
+    def _increment_error(
+        error_counts: dict[str, int],
+        error: SearchProviderError,
+    ) -> None:
+        error_type = type(error).__name__
+        error_counts[error_type] = error_counts.get(error_type, 0) + 1
+
+    def _record_failure(
+        self,
+        *,
+        query: str,
+        max_results: int,
+        charged_credits: int,
+        retries: int,
+        error_counts: dict[str, int],
+        error: SearchProviderError,
+    ) -> None:
+        self._run_recorder.record_failure(
+            provider=self.provider_name,
+            query=query,
+            search_depth=self.search_depth,
+            max_results=max_results,
+            retrieved_at=self._now(),
+            error_type=type(error).__name__,
+            charged_credits=charged_credits,
+            execution_credits=self._budget.execution_credits,
+            monthly_credits=self._budget.monthly_credits(),
+            retries=retries,
+            error_counts=dict(error_counts),
+        )
 
     def _post(
         self,
@@ -199,7 +277,8 @@ class TavilySearchProvider(SearchProvider):
             raise MalformedResponseError("Tavily response.results must be a list")
 
         normalized: list[SearchResult] = []
-        for item in raw_results[:max_results]:
+        filtered_results = self._domain_filter.filter_raw_results(raw_results)
+        for item in filtered_results[:max_results]:
             if not isinstance(item, dict):
                 raise MalformedResponseError("Tavily result must be an object")
             try:

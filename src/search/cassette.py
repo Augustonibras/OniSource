@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .domain_filter import DEFAULT_NOISE_DOMAINS_PATH, SearchDomainFilter
 from .keys import search_storage_key
 from .models import SearchResult
 from .provider import SearchProvider
@@ -26,10 +27,12 @@ class CassetteSearchProvider(SearchProvider):
         *,
         provider_name: str = "tavily",
         search_depth: str = "advanced",
+        noise_domains_path: str | Path = DEFAULT_NOISE_DOMAINS_PATH,
     ) -> None:
         self.cassette_dir = Path(cassette_dir)
         self.provider_name = provider_name
         self.search_depth = search_depth
+        self._domain_filter = SearchDomainFilter(noise_domains_path)
 
     def cassette_path(self, query: str, max_results: int = 10) -> Path:
         key = search_storage_key(
@@ -61,9 +64,10 @@ class CassetteSearchProvider(SearchProvider):
                 f"Cassette response.results must be a list: {path}"
             )
 
+        filtered_results = self._domain_filter.filter_raw_results(raw_results)
         return [
             self._normalize_result(item, query, cassette["retrieved_at"], path)
-            for item in raw_results[:max_results]
+            for item in filtered_results[:max_results]
         ]
 
     def _validate_envelope(

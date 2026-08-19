@@ -14,7 +14,7 @@ def test_query_builder_uses_versioned_role_templates() -> None:
     queries = build_search_queries(
         "phosphoric acid",
         category="industrial chemical",
-        category_config={"cas_number": "7664-38-2"},
+        category_config={"cas_number": "7664-38-2", "branded": True},
     )
 
     assert len(queries) == 11
@@ -30,7 +30,10 @@ def test_query_builder_uses_versioned_role_templates() -> None:
         (
             "BILLIONS R996 Titanium Dioxide",
             "Titanium Dioxide",
-            {"cas_numbers": ["13463-67-7", "1317-80-2"]},
+            {
+                "cas_numbers": ["13463-67-7", "1317-80-2"],
+                "branded": True,
+            },
             {
                 "Titanium Dioxide manufacturer",
                 "Titanium Dioxide producers list",
@@ -39,7 +42,7 @@ def test_query_builder_uses_versioned_role_templates() -> None:
         (
             "Phosphoric Acid",
             "Phosphoric Acid",
-            {"cas_number": "7664-38-2"},
+            {"cas_number": "7664-38-2", "branded": False},
             {
                 "Phosphoric Acid manufacturer",
                 "Phosphoric Acid producers list",
@@ -97,7 +100,7 @@ def test_cas_templates_are_skipped_when_category_config_has_no_cas_number() -> N
     queries = build_search_queries(
         "BILLIONS R996 Titanium Dioxide",
         category="Titanium Dioxide",
-        category_config={"category": "titanium_dioxide"},
+        category_config={"category": "titanium_dioxide", "branded": True},
     )
 
     assert len(queries) == 10
@@ -120,6 +123,7 @@ def test_each_configured_cas_number_renders_one_query() -> None:
         category="Titanium Dioxide",
         category_config={
             "cas_numbers": ["13463-67-7", "1317-80-2"],
+            "branded": True,
         },
     )
 
@@ -147,6 +151,7 @@ def test_multiple_cas_queries_still_obey_unique_query_limit() -> None:
             category="Example Product",
             category_config={
                 "cas_numbers": [f"10000-00-{index}" for index in range(6)],
+                "branded": True,
             },
         )
 
@@ -159,7 +164,21 @@ def test_rendered_queries_are_deduplicated_by_spaces_and_case() -> None:
 
     market_query = "phosphoric acid distribuidor brasil"
     assert sum(query.casefold() == market_query for query in queries) == 1
-    assert len(queries) == 8
+    assert len(queries) == 6
+
+
+def test_equivalence_templates_are_absent_when_human_marks_not_branded() -> None:
+    queries = build_search_queries(
+        "Phosphoric Acid",
+        category="Phosphoric Acid",
+        category_config={
+            "branded": False,
+            "cas_number": "7664-38-2",
+        },
+    )
+
+    assert "Phosphoric Acid equivalent" not in queries
+    assert "Phosphoric Acid alternative" not in queries
 
 
 @pytest.mark.parametrize("input_mp_code", ["MP 041", "MP041", "041"])

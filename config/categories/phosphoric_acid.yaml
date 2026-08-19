@@ -1,6 +1,7 @@
 category: "phosphoric_acid"
 case: "B"
 product: "Phosphoric Acid"
+branded: false
 cas_number: "7664-38-2"
 matching_mode: "SPECIFICATION_COMPLIANCE"
 technical_match: "NOT_APPLICABLE"

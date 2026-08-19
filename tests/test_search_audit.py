@@ -46,9 +46,12 @@ def test_reviewed_run_can_be_frozen_and_replayed(tmp_path) -> None:
 
     assert cassette_path.is_file()
     assert replayed[0].content == "full content"
-    assert json.loads(
+    credit_log = json.loads(
         (response_path.parent / "credits.json").read_text(encoding="utf-8")
-    )["charged_credits"] == 2
+    )
+    assert credit_log["charged_credits"] == 2
+    assert credit_log["retries"] == 0
+    assert credit_log["error_counts"] == {}
 
 
 def test_existing_cassette_requires_explicit_refresh(tmp_path) -> None:

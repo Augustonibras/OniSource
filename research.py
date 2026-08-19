@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -190,6 +191,9 @@ def live_search_payload(
 
 
 def main(argv: list[str] | None = None) -> int:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8")
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command in {None, "status"}:

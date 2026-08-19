@@ -36,6 +36,8 @@ class RunRecorder:
         charged_credits: int,
         execution_credits: int,
         monthly_credits: int,
+        retries: int = 0,
+        error_counts: dict[str, int] | None = None,
     ) -> Path:
         storage_key = search_storage_key(
             provider,
@@ -59,6 +61,8 @@ class RunRecorder:
             "charged_credits": charged_credits,
             "execution_credits": execution_credits,
             "monthly_credits": monthly_credits,
+            "retries": retries,
+            "error_counts": error_counts or {},
         }
 
         try:
@@ -74,6 +78,61 @@ class RunRecorder:
         except OSError as error:
             raise AuditWriteError(f"Could not record live search run: {run_dir}") from error
         return response_path
+
+    def record_failure(
+        self,
+        *,
+        provider: str,
+        query: str,
+        search_depth: str,
+        max_results: int,
+        retrieved_at: str,
+        error_type: str,
+        charged_credits: int,
+        execution_credits: int,
+        monthly_credits: int,
+        retries: int,
+        error_counts: dict[str, int],
+    ) -> Path:
+        storage_key = search_storage_key(
+            provider,
+            query,
+            search_depth,
+            max_results,
+        )
+        timestamp = retrieved_at.replace(":", "").replace("-", "").replace(".", "")
+        run_dir = self.runs_dir / f"{timestamp}_{storage_key[:12]}"
+        error_path = run_dir / "error.json"
+        credits_path = run_dir / "credits.json"
+        error_log = {
+            "provider": provider,
+            "query": query,
+            "search_depth": search_depth,
+            "max_results": max_results,
+            "retrieved_at": retrieved_at,
+            "error_type": error_type,
+        }
+        credit_log = {
+            "charged_credits": charged_credits,
+            "execution_credits": execution_credits,
+            "monthly_credits": monthly_credits,
+            "retries": retries,
+            "error_counts": error_counts,
+        }
+
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+            error_path.write_text(
+                json.dumps(error_log, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            credits_path.write_text(
+                json.dumps(credit_log, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as error:
+            raise AuditWriteError(f"Could not record failed search run: {run_dir}") from error
+        return error_path
 
 
 def freeze_run_as_cassette(
