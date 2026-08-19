@@ -24,3 +24,6 @@
 - Alterações devem ser testadas.
 - Não ampliar o escopo sem solicitação explícita.
 - A ferramenta de desenvolvimento está fixada no Codex até a POC terminar em PASS ou FAIL. Não trocar de agente no meio do projeto.
+- Nunca executar comandos que exibam o conteúdo do `.env`, incluindo `cat .env`, `type .env` e `Get-Content .env`.
+- Nunca imprimir o valor de `TAVILY_API_KEY` em logs, mensagens de erro ou saída de terminal.
+- O diagnóstico de leitura de `TAVILY_API_KEY` deve informar somente se a variável foi encontrada ou não, sem revelar seu valor.
