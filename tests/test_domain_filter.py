@@ -27,3 +27,15 @@ def test_pdf_result_on_allowed_domain_is_preserved() -> None:
     filtered = domain_filter.filter_raw_results([pdf_result])
 
     assert filtered == [pdf_result]
+
+
+def test_market_report_and_directory_noise_domains_are_excluded() -> None:
+    domain_filter = SearchDomainFilter()
+    raw_results = [
+        {"url": "https://www.mordorintelligence.com/report"},
+        {"url": "https://marketsandmarkets.com/market-report"},
+        {"url": "https://camaphosphoricacid.com/ranking"},
+        {"url": "https://www.databridgemarketresearch.com/reports/example"},
+    ]
+
+    assert domain_filter.filter_raw_results(raw_results) == []

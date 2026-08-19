@@ -17,7 +17,7 @@ def test_query_builder_uses_versioned_role_templates() -> None:
         category_config={"cas_number": "7664-38-2", "branded": True},
     )
 
-    assert len(queries) == 11
+    assert len(queries) == 13
     assert "phosphoric acid manufacturer" in queries
     assert "industrial chemical producers list" in queries
     assert "7664-38-2 manufacturer" in queries
@@ -65,7 +65,7 @@ def test_phase_zero_cases_render_category_templates(
     assert expected_queries.issubset(queries)
 
 
-def test_query_builder_rejects_more_than_twelve_queries(tmp_path) -> None:
+def test_query_builder_rejects_more_than_sixteen_queries(tmp_path) -> None:
     template_path = tmp_path / "too_many.yaml"
     template_path.write_text(
         "base_templates:\n"
@@ -73,15 +73,16 @@ def test_query_builder_rejects_more_than_twelve_queries(tmp_path) -> None:
             '  - "{product_name} manufacturer'
             + ' {product_name}' * repetition
             + '"\n'
-            for repetition in range(13)
+            for repetition in range(17)
         )
         + "category_templates:\n"
         + "cas_templates:\n"
+        + "origin_templates:\n"
         + "market_templates:\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(QueryLimitExceededError, match="maximum is 12"):
+    with pytest.raises(QueryLimitExceededError, match="maximum is 16"):
         build_search_queries("phosphoric acid", template_path=template_path)
 
 
@@ -103,7 +104,7 @@ def test_cas_templates_are_skipped_when_category_config_has_no_cas_number() -> N
         category_config={"category": "titanium_dioxide", "branded": True},
     )
 
-    assert len(queries) == 10
+    assert len(queries) == 12
     assert all("cas_number" not in query for query in queries)
 
 
@@ -129,7 +130,7 @@ def test_each_configured_cas_number_renders_one_query() -> None:
 
     assert "13463-67-7 manufacturer" in queries
     assert "1317-80-2 manufacturer" in queries
-    assert len(queries) == 12
+    assert len(queries) == 14
 
 
 def test_duplicate_configured_cas_numbers_produce_one_unique_query() -> None:
@@ -145,12 +146,12 @@ def test_duplicate_configured_cas_numbers_produce_one_unique_query() -> None:
 
 
 def test_multiple_cas_queries_still_obey_unique_query_limit() -> None:
-    with pytest.raises(QueryLimitExceededError, match="14 unique queries"):
+    with pytest.raises(QueryLimitExceededError, match="17 unique queries"):
         build_search_queries(
             "Example Product",
             category="Example Product",
             category_config={
-                "cas_numbers": [f"10000-00-{index}" for index in range(6)],
+                "cas_numbers": [f"10000-00-{index}" for index in range(7)],
                 "branded": True,
             },
         )
@@ -164,7 +165,35 @@ def test_rendered_queries_are_deduplicated_by_spaces_and_case() -> None:
 
     market_query = "phosphoric acid distribuidor brasil"
     assert sum(query.casefold() == market_query for query in queries) == 1
-    assert len(queries) == 6
+    assert len(queries) == 8
+
+
+def test_origin_templates_render_once_per_human_configured_country() -> None:
+    queries = build_search_queries(
+        "Phosphoric Acid",
+        category="Phosphoric Acid",
+        category_config={
+            "branded": False,
+            "origin_countries": ["China", "India", "Vietnam"],
+        },
+    )
+
+    for country in ("China", "India", "Vietnam"):
+        assert queries.count(f"Phosphoric Acid manufacturer {country}") == 1
+
+
+def test_origin_country_is_never_inferred_when_not_configured() -> None:
+    queries = build_search_queries(
+        "Phosphoric Acid",
+        category="Phosphoric Acid",
+        category_config={"branded": False},
+    )
+
+    assert all(
+        country not in query
+        for query in queries
+        for country in ("China", "India", "Vietnam")
+    )
 
 
 def test_equivalence_templates_are_absent_when_human_marks_not_branded() -> None:

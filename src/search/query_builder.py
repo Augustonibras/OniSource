@@ -10,26 +10,30 @@ from typing import Mapping
 DEFAULT_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "query_templates.yaml"
 )
-MAX_QUERIES_PER_CASE = 12
+MAX_QUERIES_PER_CASE = 16
 _TEMPLATE_SECTIONS = (
     "base_templates",
     "category_templates",
     "cas_templates",
+    "origin_templates",
     "market_templates",
 )
 _SECTION_PLACEHOLDERS = {
     "base_templates": {"product_name"},
     "category_templates": {"category"},
     "cas_templates": {"cas_number"},
+    "origin_templates": {"category", "country"},
     "market_templates": {"product_name", "category"},
 }
 _ALLOWED_ROLE_TERMS = {
     "alternative",
     "distribuidor brasil",
     "equivalent",
+    "fornecedor brasil",
     "manufacturer",
     "producer",
     "producers list",
+    "revendedor brasil",
     "technical data sheet",
     "supplier",
 }
@@ -204,6 +208,23 @@ def _configured_branded(
     return branded
 
 
+def _configured_origin_countries(
+    category_config: Mapping[str, object] | None,
+) -> list[str]:
+    if category_config is None or "origin_countries" not in category_config:
+        return []
+    raw_countries = category_config["origin_countries"]
+    if not isinstance(raw_countries, (list, tuple)):
+        raise ValueError("category origin_countries must be a list")
+
+    countries: list[str] = []
+    for raw_country in raw_countries:
+        if not isinstance(raw_country, str) or not raw_country.strip():
+            raise ValueError("each configured origin country must be non-empty text")
+        countries.append(" ".join(raw_country.split()))
+    return countries
+
+
 def build_search_queries(
     product_name: str,
     category: str | None = None,
@@ -215,12 +236,14 @@ def build_search_queries(
     normalized_category = " ".join(category.split()) if category else ""
     cas_numbers = _configured_cas_numbers(category_config)
     branded = _configured_branded(category_config)
+    origin_countries = _configured_origin_countries(category_config)
 
     templates = load_query_templates(template_path)
     values = {
         "product_name": resolved_product_name,
         "category": normalized_category,
         "cas_number": "",
+        "country": "",
     }
 
     rendered: list[str] = []
@@ -228,6 +251,8 @@ def build_search_queries(
         if section == "category_templates" and not normalized_category:
             continue
         if section == "cas_templates" and not cas_numbers:
+            continue
+        if section == "origin_templates" and not origin_countries:
             continue
         for template in templates[section]:
             if (
@@ -246,6 +271,11 @@ def build_search_queries(
                 contexts = [
                     {**values, "cas_number": cas_number}
                     for cas_number in cas_numbers
+                ]
+            elif section == "origin_templates":
+                contexts = [
+                    {**values, "country": country}
+                    for country in origin_countries
                 ]
             for context in contexts:
                 if any(not context[field_name] for field_name in required_fields):

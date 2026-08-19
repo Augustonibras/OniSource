@@ -5,6 +5,8 @@ branded: true
 cas_numbers:
   - "13463-67-7"
   - "1317-80-2"
+origin_countries:
+  - "China"
 matching_mode: "TECHNICAL_MATCH"
 hard_constraints:
   crystal_form: "rutile"
