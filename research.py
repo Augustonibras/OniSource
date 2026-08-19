@@ -94,6 +94,15 @@ def load_category(name: str) -> dict[str, Any]:
     return parsed
 
 
+def load_search_category_config(category: str | None) -> dict[str, Any] | None:
+    if not category:
+        return None
+    normalized_key = "_".join(category.casefold().replace("_", " ").split())
+    if normalized_key not in CATEGORY_PATHS:
+        return None
+    return load_category(normalized_key)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OniSource Phase 0 local foundation")
     subparsers = parser.add_subparsers(dest="command")
@@ -137,7 +146,11 @@ def dry_run_search_payload(
     product_name: str,
     category: str | None = None,
 ) -> dict[str, Any]:
-    queries = build_search_queries(product_name, category)
+    queries = build_search_queries(
+        product_name,
+        category,
+        category_config=load_search_category_config(category),
+    )
     return {
         "dry_run": True,
         "queries": queries,
@@ -149,7 +162,11 @@ def live_search_payload(
     product_name: str,
     category: str | None = None,
 ) -> dict[str, Any]:
-    queries = build_search_queries(product_name, category)
+    queries = build_search_queries(
+        product_name,
+        category,
+        category_config=load_search_category_config(category),
+    )
     budget = SearchBudget()
     live_provider = TavilySearchProvider(budget=budget)
     provider = CachedSearchProvider(

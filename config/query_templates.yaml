@@ -3,11 +3,16 @@ base_templates:
   - "{product_name} producer"
   - "{product_name} technical data sheet"
   - "{product_name} supplier"
-  - "{product_name} CAS"
+  - "{product_name} equivalent"
+  - "{product_name} alternative"
 
 category_templates:
-  - "{product_name} {category} manufacturer"
-  - "{product_name} {category} producer"
-  - "{product_name} {category} technical data sheet"
-  - "{product_name} {category} supplier"
-  - "{product_name} {category} CAS"
+  - "{category} manufacturer"
+  - "{category} producers list"
+
+cas_templates:
+  - "{cas_number} manufacturer"
+
+market_templates:
+  - "{product_name} distribuidor Brasil"
+  - "{category} distribuidor Brasil"

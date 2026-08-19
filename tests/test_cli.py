@@ -23,6 +23,7 @@ def test_category_configs_are_loadable_without_yaml_dependency() -> None:
         "product_category": "titanium_dioxide_pigment",
         "application_must_support": "coatings",
     }
+    assert titanium["cas_numbers"] == ["13463-67-7", "1317-80-2"]
     assert set(titanium["weighted_properties"]) == {
         "tio2_content",
         "process_route",
@@ -37,6 +38,7 @@ def test_category_configs_are_loadable_without_yaml_dependency() -> None:
         item["weight"] for item in titanium["weighted_properties"].values()
     } == {"TBD_HUMAN"}
     assert phosphoric["matching_mode"] == "SPECIFICATION_COMPLIANCE"
+    assert phosphoric["cas_number"] == "7664-38-2"
     assert phosphoric["technical_match"] == "NOT_APPLICABLE"
     assert phosphoric["country_semantics"] == "PRODUCTION_PLANT_COUNTRY"
 
@@ -70,5 +72,14 @@ def test_cli_search_dry_run_prints_queries_without_network() -> None:
     payload = json.loads(completed.stdout)
 
     assert payload["dry_run"] is True
-    assert payload["estimated_credits"] == 10
-    assert len(payload["queries"]) == 5
+    assert payload["estimated_credits"] == 14
+    assert len(payload["queries"]) == 7
+
+
+def test_case_b_dry_run_uses_human_cas_from_category_config() -> None:
+    from research import dry_run_search_payload
+
+    payload = dry_run_search_payload("Phosphoric Acid", "Phosphoric Acid")
+
+    assert "7664-38-2 manufacturer" in payload["queries"]
+    assert payload["estimated_credits"] == len(payload["queries"]) * 2

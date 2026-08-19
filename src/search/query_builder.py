@@ -4,20 +4,34 @@ import json
 import re
 import string
 from pathlib import Path
+from typing import Mapping
 
 
 DEFAULT_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "query_templates.yaml"
 )
 MAX_QUERIES_PER_CASE = 12
-_TEMPLATE_SECTIONS = {"base_templates", "category_templates"}
-_ALLOWED_PLACEHOLDERS = {"product_name", "category"}
+_TEMPLATE_SECTIONS = (
+    "base_templates",
+    "category_templates",
+    "cas_templates",
+    "market_templates",
+)
+_SECTION_PLACEHOLDERS = {
+    "base_templates": {"product_name"},
+    "category_templates": {"category"},
+    "cas_templates": {"cas_number"},
+    "market_templates": {"product_name", "category"},
+}
 _ALLOWED_ROLE_TERMS = {
+    "alternative",
+    "distribuidor brasil",
+    "equivalent",
     "manufacturer",
     "producer",
+    "producers list",
     "technical data sheet",
     "supplier",
-    "cas",
 }
 _INTERNAL_MP_CODE = re.compile(r"\bMP\s*\d{1,3}\b", re.IGNORECASE)
 _BARE_INTERNAL_CODE = re.compile(r"^\d{1,3}$")
@@ -80,7 +94,11 @@ def load_query_templates(
             raw_line[len("  - ") :].strip(),
             line_number=line_number,
         )
-        _validate_template(template, line_number=line_number)
+        _validate_template(
+            template,
+            section=current_section,
+            line_number=line_number,
+        )
         sections[current_section].append(template)
 
     if not sections["base_templates"]:
@@ -88,7 +106,12 @@ def load_query_templates(
     return sections
 
 
-def _validate_template(template: str, *, line_number: int) -> None:
+def _validate_template(
+    template: str,
+    *,
+    section: str,
+    line_number: int,
+) -> None:
     formatter = string.Formatter()
     fields: list[str] = []
     literal_parts: list[str] = []
@@ -101,15 +124,19 @@ def _validate_template(template: str, *, line_number: int) -> None:
         literal_parts.append(literal_text)
         if field_name is None:
             continue
-        if field_name not in _ALLOWED_PLACEHOLDERS or format_spec or conversion:
+        if (
+            field_name not in _SECTION_PLACEHOLDERS[section]
+            or format_spec
+            or conversion
+        ):
             raise QueryTemplateError(
                 f"Unsupported template field at line {line_number}"
             )
         fields.append(field_name)
 
-    if "product_name" not in fields:
+    if not fields:
         raise QueryTemplateError(
-            f"Template at line {line_number} must use product_name"
+            f"Template at line {line_number} must use an allowed placeholder"
         )
     fixed_text = " ".join("".join(literal_parts).split()).casefold()
     if fixed_text not in _ALLOWED_ROLE_TERMS:
@@ -129,34 +156,87 @@ def _validate_resolved_product_name(product_name: str) -> str:
     return normalized
 
 
+def _configured_cas_numbers(
+    category_config: Mapping[str, object] | None,
+) -> list[str]:
+    if category_config is None:
+        return []
+
+    singular = category_config.get("cas_number")
+    plural = category_config.get("cas_numbers")
+    if singular is not None and plural is not None:
+        raise ValueError("category cannot define both cas_number and cas_numbers")
+
+    if singular is not None:
+        raw_values: list[object] = [singular]
+    elif plural is not None:
+        if not isinstance(plural, (list, tuple)):
+            raise ValueError("category cas_numbers must be a list")
+        raw_values = list(plural)
+    else:
+        return []
+
+    normalized_values: list[str] = []
+    for raw_value in raw_values:
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise ValueError("each configured CAS number must be non-empty text")
+        normalized_values.append(" ".join(raw_value.split()))
+    return normalized_values
+
+
 def build_search_queries(
     product_name: str,
     category: str | None = None,
     *,
+    category_config: Mapping[str, object] | None = None,
     template_path: str | Path = DEFAULT_TEMPLATE_PATH,
 ) -> list[str]:
     resolved_product_name = _validate_resolved_product_name(product_name)
     normalized_category = " ".join(category.split()) if category else ""
-    templates = load_query_templates(template_path)
-    selected = list(templates["base_templates"])
-    if normalized_category:
-        selected.extend(templates["category_templates"])
+    cas_numbers = _configured_cas_numbers(category_config)
 
-    if len(selected) > MAX_QUERIES_PER_CASE:
+    templates = load_query_templates(template_path)
+    values = {
+        "product_name": resolved_product_name,
+        "category": normalized_category,
+        "cas_number": "",
+    }
+
+    rendered: list[str] = []
+    for section in _TEMPLATE_SECTIONS:
+        if section == "category_templates" and not normalized_category:
+            continue
+        if section == "cas_templates" and not cas_numbers:
+            continue
+        for template in templates[section]:
+            required_fields = {
+                field_name
+                for _, field_name, _, _ in string.Formatter().parse(template)
+                if field_name is not None
+            }
+            contexts = [values]
+            if section == "cas_templates":
+                contexts = [
+                    {**values, "cas_number": cas_number}
+                    for cas_number in cas_numbers
+                ]
+            for context in contexts:
+                if any(not context[field_name] for field_name in required_fields):
+                    continue
+                rendered.append(" ".join(template.format(**context).split()))
+
+    unique_queries: list[str] = []
+    seen: set[str] = set()
+    for query in rendered:
+        deduplication_key = " ".join(query.split()).casefold()
+        if deduplication_key in seen:
+            continue
+        seen.add(deduplication_key)
+        unique_queries.append(query)
+
+    if len(unique_queries) > MAX_QUERIES_PER_CASE:
         raise QueryLimitExceededError(
-            f"Query plan contains {len(selected)} queries; "
+            f"Query plan contains {len(unique_queries)} unique queries; "
             f"maximum is {MAX_QUERIES_PER_CASE}"
         )
-
-    queries = [
-        " ".join(
-            template.format(
-                product_name=resolved_product_name,
-                category=normalized_category,
-            ).split()
-        )
-        for template in selected
-    ]
-    if len(set(queries)) != len(queries):
-        raise QueryTemplateError("Query templates generated duplicate queries")
-    return queries
+    return unique_queries
