@@ -10,7 +10,8 @@ def test_status_declares_external_integrations_deferred() -> None:
 
     assert payload["project"] == "OniSource"
     assert payload["phase"] == 0
-    assert payload["deferred"] == ["internet", "tavily", "llm"]
+    assert payload["deferred"] == ["llm"]
+    assert "search_provider" in payload["implemented"]
 
 
 def test_category_configs_are_loadable_without_yaml_dependency() -> None:
@@ -50,7 +51,7 @@ def test_cli_status_returns_json() -> None:
     payload = json.loads(completed.stdout)
 
     assert payload["project"] == "OniSource"
-    assert "internet" in payload["deferred"]
+    assert payload["deferred"] == ["llm"]
 
 
 def test_cli_search_dry_run_prints_queries_without_network() -> None:

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from src.search.audit import freeze_run_as_cassette
 from src.search.budget import SearchBudget
+from src.search.cache import CachedSearchProvider
 from src.search.query_builder import build_search_queries
+from src.search.tavily import TavilySearchProvider
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -100,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("product_name")
     search_parser.add_argument("--category")
     search_parser.add_argument("--dry-run", action="store_true")
+    cassette_parser = subparsers.add_parser(
+        "freeze-cassette", help="Freeze a reviewed live response"
+    )
+    cassette_parser.add_argument("run_response")
+    cassette_parser.add_argument("--refresh-cassettes", action="store_true")
     return parser
 
 
@@ -116,8 +125,11 @@ def status_payload() -> dict[str, Any]:
             "technical_matching_foundation",
             "specification_compliance",
             "pipeline_metrics",
+            "search_provider",
+            "search_query_builder",
+            "search_budget_guard",
         ],
-        "deferred": ["internet", "tavily", "llm"],
+        "deferred": ["llm"],
     }
 
 
@@ -133,15 +145,49 @@ def dry_run_search_payload(
     }
 
 
+def live_search_payload(
+    product_name: str,
+    category: str | None = None,
+) -> dict[str, Any]:
+    queries = build_search_queries(product_name, category)
+    budget = SearchBudget()
+    live_provider = TavilySearchProvider(budget=budget)
+    provider = CachedSearchProvider(
+        live_provider,
+        provider_name=live_provider.provider_name,
+        depth=live_provider.search_depth,
+    )
+    query_results = [
+        {
+            "query": query,
+            "results": [asdict(result) for result in provider.search(query)],
+        }
+        for query in queries
+    ]
+    return {
+        "dry_run": False,
+        "queries": query_results,
+        "execution_credits": budget.execution_credits,
+        "monthly_credits": budget.monthly_credits(),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command in {None, "status"}:
         payload = status_payload()
     elif args.command == "search":
-        if not args.dry_run:
-            parser.error("search currently requires --dry-run")
-        payload = dry_run_search_payload(args.product_name, args.category)
+        if args.dry_run:
+            payload = dry_run_search_payload(args.product_name, args.category)
+        else:
+            payload = live_search_payload(args.product_name, args.category)
+    elif args.command == "freeze-cassette":
+        cassette_path = freeze_run_as_cassette(
+            args.run_response,
+            refresh_cassettes=args.refresh_cassettes,
+        )
+        payload = {"cassette": str(cassette_path), "frozen": True}
     else:
         payload = load_category(args.category)
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
