@@ -1,16 +1,35 @@
 controls:
-  groupe_chimique_tunisien:
-    company: "Groupe Chimique Tunisien"
-    expected_role: "VERIFIED_MANUFACTURER"
-    expected_compliance: "TBD_HUMAN"
-  menjie:
-    company: "Menjie"
+  icl_group:
+    company: "ICL Group"
+    expected_role: "MANUFACTURER"
+  vietnam_phosphorus_jsc:
+    company: "Vietnam Phosphorus JSC"
+    official_domain: "phosphorus.com.vn"
+    expected_role: "MANUFACTURER"
+  shijiazhuang_taihe_chemical:
+    company: "Shijiazhuang Taihe Chemical Co., Ltd"
+    expected_role: "MANUFACTURER"
+  bann_quimica:
+    company: "Bann Química Ltda."
+    expected_role: "MANUFACTURER"
+  gj_chemical:
+    company: "GJ Chemical"
+    official_domain: "gjchemical.com"
+    expected_role: "DISTRIBUTOR"
+  zhengzhou_mahaco_industrial:
+    company: "Zhengzhou MAHACO Industrial Co., Ltd"
+    official_domain: "mahaco.biz"
     expected_role: "TRADER"
-    product_grade: "food"
-    expected_concentration_result: "PASS"
-    expected_grade_result: "NOT_EQUIVALENT"
-  ally:
-    company: "Ally (producerchem5@163.com)"
+  cobase_group:
+    company: "Cobase Group"
+    official_domain: "cobasegroup.com"
     expected_role: "UNKNOWN"
-    must_not_be: "VERIFIED_MANUFACTURER"
-    critical_failure_if_violated: true
+    human_note: "papel não determinado"
+  metoree_directory:
+    domain: "us.metoree.com"
+    entity_type: "COMPANY_DIRECTORY"
+    expected_role: "UNKNOWN"
+    must_not_be:
+      - "MANUFACTURER"
+      - "DISTRIBUTOR"
+      - "TRADER"
