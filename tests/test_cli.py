@@ -51,3 +51,23 @@ def test_cli_status_returns_json() -> None:
 
     assert payload["project"] == "OniSource"
     assert "internet" in payload["deferred"]
+
+
+def test_cli_search_dry_run_prints_queries_without_network() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "research.py",
+            "search",
+            "phosphoric acid",
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["dry_run"] is True
+    assert payload["estimated_credits"] == 10
+    assert len(payload["queries"]) == 5

@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.search.budget import SearchBudget
+from src.search.query_builder import build_search_queries
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CATEGORY_PATHS = {
@@ -93,6 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="Show implemented and deferred capabilities")
     category_parser = subparsers.add_parser("show-category", help="Show category rules")
     category_parser.add_argument("category", choices=sorted(CATEGORY_PATHS))
+    search_parser = subparsers.add_parser("search", help="Prepare a search execution")
+    search_parser.add_argument("product_name")
+    search_parser.add_argument("--category")
+    search_parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -114,10 +121,27 @@ def status_payload() -> dict[str, Any]:
     }
 
 
+def dry_run_search_payload(
+    product_name: str,
+    category: str | None = None,
+) -> dict[str, Any]:
+    queries = build_search_queries(product_name, category)
+    return {
+        "dry_run": True,
+        "queries": queries,
+        "estimated_credits": SearchBudget.estimate_credits(len(queries)),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.command in {None, "status"}:
         payload = status_payload()
+    elif args.command == "search":
+        if not args.dry_run:
+            parser.error("search currently requires --dry-run")
+        payload = dry_run_search_payload(args.product_name, args.category)
     else:
         payload = load_category(args.category)
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
