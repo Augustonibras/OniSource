@@ -2,7 +2,9 @@ import json
 import subprocess
 import sys
 
-from research import load_category, status_payload
+import pytest
+
+from research import dry_run_search_payload, load_category, status_payload
 
 
 def test_status_declares_external_integrations_deferred() -> None:
@@ -18,6 +20,7 @@ def test_category_configs_are_loadable_without_yaml_dependency() -> None:
     titanium = load_category("titanium_dioxide")
     phosphoric = load_category("phosphoric_acid")
 
+    assert titanium["category"] == "Titanium Dioxide"
     assert titanium["hard_constraints"] == {
         "crystal_form": "rutile",
         "product_category": "titanium_dioxide_pigment",
@@ -39,6 +42,7 @@ def test_category_configs_are_loadable_without_yaml_dependency() -> None:
         item["weight"] for item in titanium["weighted_properties"].values()
     } == {"TBD_HUMAN"}
     assert phosphoric["matching_mode"] == "SPECIFICATION_COMPLIANCE"
+    assert phosphoric["category"] == "Phosphoric Acid"
     assert phosphoric["cas_number"] == "7664-38-2"
     assert phosphoric["branded"] is False
     assert phosphoric["technical_match"] == "NOT_APPLICABLE"
@@ -97,11 +101,25 @@ def test_cli_forces_utf8_without_altering_unicode_text() -> None:
 
 
 def test_case_b_dry_run_uses_human_cas_from_category_config() -> None:
-    from research import dry_run_search_payload
-
     payload = dry_run_search_payload("Phosphoric Acid", "Phosphoric Acid")
 
     assert "7664-38-2 manufacturer" in payload["queries"]
     assert "Phosphoric Acid equivalent" not in payload["queries"]
     assert "Phosphoric Acid alternative" not in payload["queries"]
     assert payload["estimated_credits"] == len(payload["queries"]) * 2
+
+
+@pytest.mark.parametrize(
+    ("category_identifier", "product_name"),
+    [
+        ("titanium_dioxide", "BILLIONS R996 Titanium Dioxide"),
+        ("phosphoric_acid", "Phosphoric Acid"),
+    ],
+)
+def test_phase_zero_dry_run_queries_never_contain_category_identifier_underscores(
+    category_identifier: str,
+    product_name: str,
+) -> None:
+    payload = dry_run_search_payload(product_name, category_identifier)
+
+    assert all("_" not in query for query in payload["queries"])

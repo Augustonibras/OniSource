@@ -101,7 +101,7 @@ def test_cas_templates_are_skipped_when_category_config_has_no_cas_number() -> N
     queries = build_search_queries(
         "BILLIONS R996 Titanium Dioxide",
         category="Titanium Dioxide",
-        category_config={"category": "titanium_dioxide", "branded": True},
+        category_config={"category": "Titanium Dioxide", "branded": True},
     )
 
     assert len(queries) == 12

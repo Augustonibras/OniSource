@@ -225,6 +225,17 @@ def _configured_origin_countries(
     return countries
 
 
+def _configured_category_name(
+    category_config: Mapping[str, object] | None,
+) -> str | None:
+    if category_config is None or "category" not in category_config:
+        return None
+    category_name = category_config["category"]
+    if not isinstance(category_name, str) or not category_name.strip():
+        raise ValueError("configured category must be non-empty text")
+    return " ".join(category_name.split())
+
+
 def build_search_queries(
     product_name: str,
     category: str | None = None,
@@ -233,7 +244,12 @@ def build_search_queries(
     template_path: str | Path = DEFAULT_TEMPLATE_PATH,
 ) -> list[str]:
     resolved_product_name = _validate_resolved_product_name(product_name)
-    normalized_category = " ".join(category.split()) if category else ""
+    configured_category = _configured_category_name(category_config)
+    normalized_category = (
+        configured_category
+        if configured_category is not None
+        else " ".join(category.split()) if category else ""
+    )
     cas_numbers = _configured_cas_numbers(category_config)
     branded = _configured_branded(category_config)
     origin_countries = _configured_origin_countries(category_config)
