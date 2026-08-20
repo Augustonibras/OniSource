@@ -203,6 +203,21 @@ def test_search_requires_explicit_live_flag() -> None:
     assert live.live is True
 
 
+def test_benchmark_has_separate_explicit_live_extract_flag() -> None:
+    parser = build_parser()
+
+    offline = parser.parse_args(["benchmark"])
+    extract_live = parser.parse_args(
+        ["benchmark", "--live-extract", "--refresh-extract-cassettes"]
+    )
+
+    assert offline.live is False
+    assert offline.live_extract is False
+    assert extract_live.live is False
+    assert extract_live.live_extract is True
+    assert extract_live.refresh_extract_cassettes is True
+
+
 def test_phase_zero_benchmark_defaults_to_offline_cassettes(monkeypatch) -> None:
     import research
 
@@ -261,3 +276,18 @@ def test_offline_benchmark_classifies_results_and_compares_ground_truth() -> Non
 def test_refresh_cassettes_requires_explicit_live_mode() -> None:
     with pytest.raises(ValueError, match="requires live"):
         benchmark_payload(refresh_cassettes=True)
+
+
+def test_refresh_extract_cassettes_requires_explicit_extract_live_mode() -> None:
+    with pytest.raises(ValueError, match="requires live_extract"):
+        benchmark_payload(refresh_extract_cassettes=True)
+
+
+def test_missing_extract_cassettes_are_reported_explicitly(tmp_path) -> None:
+    payload = benchmark_payload(extract_cassette_dir=tmp_path / "missing")
+
+    assert [case["extraction"]["provider_mode"] for case in payload["cases"]] == [
+        "NOT_AVAILABLE",
+        "NOT_AVAILABLE",
+    ]
+    assert payload["total_extraction_credits_consumed"] == 0

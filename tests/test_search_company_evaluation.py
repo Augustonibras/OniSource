@@ -103,6 +103,32 @@ def test_ground_truth_comparison_counts_hits_errors_and_missing_entities() -> No
     assert rows["cobase_group"]["comparison"] == "ERROR"
 
 
+def test_false_positive_count_covers_every_result_not_only_entity_summary() -> None:
+    report = build_company_classification_report(
+        "phosphoric_acid",
+        [
+            _result(
+                "https://gjchemical.com/phosphoric-acid",
+                "GJ Chemical phosphoric acid manufacturer",
+                "GJ Chemical is a manufacturer of phosphoric acid.",
+            ),
+            _result(
+                "https://unadjudicated.example/product",
+                "Unadjudicated manufacturer",
+                "Unadjudicated is a manufacturer of phosphoric acid.",
+            ),
+        ],
+    )
+
+    summary = report["result_error_summary"]
+    assert summary["scope"] == "ALL_RESULTS"
+    assert summary["total_results"] == 2
+    assert summary["errors"] == 1
+    assert summary["false_positive_errors"] == 1
+    assert summary["not_adjudicated"] == 1
+    assert summary["non_unknown_not_adjudicated"] == 1
+
+
 def test_directory_negative_is_not_manufacturer_from_list_heading() -> None:
     report = build_company_classification_report(
         "phosphoric_acid",

@@ -4,7 +4,8 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
+from typing import Iterable, Mapping
+from urllib.parse import urlsplit
 
 from src.company_classification import classify_company
 from src.models import (
@@ -20,6 +21,7 @@ from .coverage import (
     load_benchmark_entities,
     match_benchmark_entity,
 )
+from .marketplace import MarketplaceDomainRegistry
 from .models import SearchResult
 
 
@@ -104,12 +106,14 @@ def _role_signals(
     entity: BenchmarkEntity,
     result: SearchResult,
     matched_by: tuple[str, ...],
+    extracted_content: str = "",
 ) -> tuple[_RoleSignal, ...]:
     target_pattern = _target_pattern(entity.name)
     fragments = (
         ("SEARCH_RESULT_TITLE", result.title),
         ("SEARCH_RESULT_SNIPPET", result.snippet),
         ("SEARCH_RESULT_CONTENT", result.content),
+        ("EXTRACTED_CONTENT", extracted_content),
     )
     signals: list[_RoleSignal] = []
 
@@ -270,6 +274,188 @@ def _classification_payload(
     }
 
 
+def _marketplace_payload(
+    *,
+    target_entity: str,
+    control_id: str | None,
+    matched_by: tuple[str, ...],
+) -> dict[str, object]:
+    return {
+        "control_id": control_id,
+        "target_entity": target_entity,
+        "matched_by": list(matched_by),
+        "role": "MARKETPLACE",
+        "detailed_classification": "MARKETPLACE",
+        "reason_codes": ["MARKETPLACE_DOMAIN_HUMAN_CONFIG"],
+        "evidence": [],
+    }
+
+
+def _domain_alias(result: SearchResult) -> str:
+    hostname = (urlsplit(result.url).hostname or UNKNOWN).casefold()
+    hostname = hostname.removeprefix("www.")
+    label = hostname.split(".", 1)[0]
+    label_key = re.sub(r"[^a-z0-9]+", "", label)
+    title_words = re.findall(r"[^\W_]+", result.title, flags=re.UNICODE)
+    candidates: list[tuple[int, int, str]] = []
+    for size in range(1, min(4, len(title_words)) + 1):
+        for start in range(0, len(title_words) - size + 1):
+            words = title_words[start : start + size]
+            joined = re.sub(r"[^a-z0-9]+", "", "".join(words).casefold())
+            if len(joined) < 4:
+                continue
+            if joined in label_key or label_key in joined:
+                candidates.append(
+                    (
+                        0 if joined == label_key else 1,
+                        abs(len(joined) - len(label_key)),
+                        " ".join(words),
+                    )
+                )
+    if candidates:
+        return min(candidates, key=lambda item: (item[0], item[1]))[2]
+    return label.replace("-", " ") or UNKNOWN
+
+
+def _percentage(count: int, denominator: int) -> float:
+    if denominator == 0:
+        return 0.0
+    return round(count / denominator * 100, 2)
+
+
+def _role_distribution(result_rows: list[dict[str, object]]) -> dict[str, object]:
+    classifications = [row["domain_classification"] for row in result_rows]
+    marketplace_count = sum(
+        classification["role"] == "MARKETPLACE"
+        for classification in classifications
+    )
+    denominator = len(classifications) - marketplace_count
+    roles: dict[str, object] = {}
+    levels = {
+        "MANUFACTURER": (
+            "VERIFIED_MANUFACTURER",
+            "PROBABLE_MANUFACTURER",
+        ),
+        "DISTRIBUTOR": (
+            "VERIFIED_DISTRIBUTOR",
+            "PROBABLE_DISTRIBUTOR",
+        ),
+    }
+    for role in ("MANUFACTURER", "DISTRIBUTOR", "TRADER", "UNKNOWN"):
+        count = sum(classification["role"] == role for classification in classifications)
+        role_payload: dict[str, object] = {
+            "count": count,
+            "percentage": _percentage(count, denominator),
+        }
+        if role in levels:
+            role_payload["levels"] = {
+                level: {
+                    "count": sum(
+                        classification["detailed_classification"] == level
+                        for classification in classifications
+                    ),
+                    "percentage": _percentage(
+                        sum(
+                            classification["detailed_classification"] == level
+                            for classification in classifications
+                        ),
+                        denominator,
+                    ),
+                }
+                for level in levels[role]
+            }
+        roles[role] = role_payload
+
+    examples: dict[str, list[dict[str, object]]] = {}
+    for role in ("MANUFACTURER", "DISTRIBUTOR", "TRADER"):
+        role_examples: list[dict[str, object]] = []
+        seen_domains: set[str] = set()
+        for row, classification in zip(result_rows, classifications):
+            if classification["role"] != role:
+                continue
+            domain = (urlsplit(row["url"]).hostname or "UNKNOWN_DOMAIN").casefold()
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+            role_examples.append(
+                {
+                    "domain": domain,
+                    "detailed_classification": classification[
+                        "detailed_classification"
+                    ],
+                    "reason_codes": classification["reason_codes"],
+                }
+            )
+            if len(role_examples) == 5:
+                break
+        examples[role] = role_examples
+
+    unknown_signals: list[dict[str, object]] = []
+    seen_urls: set[str] = set()
+    role_words = ("manufacturer", "producer", "fabricante", "distribuidor")
+    for row, classification in zip(result_rows, classifications):
+        if classification["role"] != "UNKNOWN":
+            continue
+        title = row["title"]
+        if not any(word in title.casefold() for word in role_words):
+            continue
+        url = row["url"]
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        unknown_signals.append(
+            {
+                "domain": (urlsplit(url).hostname or "UNKNOWN_DOMAIN").casefold(),
+                "title": title,
+                "reason_codes": classification["reason_codes"],
+            }
+        )
+        if len(unknown_signals) == 10:
+            break
+
+    return {
+        "total_results": len(classifications),
+        "marketplace_results": marketplace_count,
+        "role_denominator": denominator,
+        "roles": roles,
+        "examples_by_non_unknown_role": examples,
+        "unknown_with_role_signal_in_title": unknown_signals,
+    }
+
+
+def _result_error_summary(result_rows: list[dict[str, object]]) -> dict[str, int | str]:
+    hits = sum(row["result_comparison"] == "HIT" for row in result_rows)
+    errors = sum(row["result_comparison"] == "ERROR" for row in result_rows)
+    not_adjudicated = sum(
+        row["result_comparison"] == "NOT_ADJUDICATED" for row in result_rows
+    )
+    marketplace_controls = sum(
+        row["expected_domain_role"] == "MARKETPLACE" for row in result_rows
+    )
+    false_positive_errors = sum(
+        row["domain_classification"]["role"] == "MANUFACTURER"
+        and row["expected_domain_role"]
+        in {"DISTRIBUTOR", "TRADER", "MARKETPLACE"}
+        for row in result_rows
+    )
+    non_unknown_not_adjudicated = sum(
+        row["result_comparison"] == "NOT_ADJUDICATED"
+        and row["domain_classification"]["role"] != "UNKNOWN"
+        for row in result_rows
+    )
+    return {
+        "scope": "ALL_RESULTS",
+        "total_results": len(result_rows),
+        "evaluated_results": hits + errors,
+        "hits": hits,
+        "errors": errors,
+        "false_positive_errors": false_positive_errors,
+        "marketplace_controls": marketplace_controls,
+        "not_adjudicated": not_adjudicated,
+        "non_unknown_not_adjudicated": non_unknown_not_adjudicated,
+    }
+
+
 def _forbidden_violation(
     entity: BenchmarkEntity,
     *,
@@ -291,11 +477,15 @@ def _forbidden_violation(
 def build_company_classification_report(
     category: str,
     results: Iterable[SearchResult],
+    *,
+    extracted_content_by_url: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Classify cassette search evidence, then compare it with human labels."""
 
     result_items = list(results)
     entities = load_benchmark_entities(category) or ()
+    extracted_content = dict(extracted_content_by_url or {})
+    marketplaces = MarketplaceDomainRegistry()
     signals_by_control: dict[str, list[_RoleSignal]] = {
         entity.control_id: [] for entity in entities
     }
@@ -305,20 +495,66 @@ def build_company_classification_report(
     result_rows: list[dict[str, object]] = []
 
     for result in result_items:
+        is_marketplace = marketplaces.matches_url(result.url)
+        extracted = extracted_content.get(result.url, "")
+        if is_marketplace:
+            domain_classification = _marketplace_payload(
+                target_entity=(urlsplit(result.url).hostname or UNKNOWN),
+                control_id=None,
+                matched_by=("domain",),
+            )
+        else:
+            domain_entity = BenchmarkEntity(
+                control_id="",
+                name=_domain_alias(result),
+                expected_role=None,
+                domains=((urlsplit(result.url).hostname or ""),),
+                negative=False,
+                must_not_be=(),
+            )
+            domain_classification = _classification_payload(
+                target_entity=domain_entity.name,
+                control_id=None,
+                matched_by=("domain",),
+                signals=_role_signals(
+                    domain_entity,
+                    result,
+                    ("domain",),
+                    extracted,
+                ),
+            )
+
         entity_rows: list[dict[str, object]] = []
+        expected_domain_roles: set[str] = set()
         for entity in entities:
             matched_by = match_benchmark_entity(entity, result)
             if not matched_by:
                 continue
-            signals = _role_signals(entity, result, matched_by)
-            signals_by_control[entity.control_id].extend(signals)
+            expected = _expected_role(entity.expected_role)
+            if "domain" in matched_by and not entity.negative and expected is not None:
+                expected_domain_roles.add(expected)
+            signals = (
+                ()
+                if is_marketplace
+                else _role_signals(entity, result, matched_by, extracted)
+            )
+            if not is_marketplace:
+                signals_by_control[entity.control_id].extend(signals)
             matched_results_by_control[entity.control_id].add(_result_id(result))
             entity_rows.append(
-                _classification_payload(
-                    target_entity=entity.name,
-                    control_id=entity.control_id,
-                    matched_by=matched_by,
-                    signals=signals,
+                (
+                    _marketplace_payload(
+                        target_entity=entity.name,
+                        control_id=entity.control_id,
+                        matched_by=matched_by,
+                    )
+                    if is_marketplace
+                    else _classification_payload(
+                        target_entity=entity.name,
+                        control_id=entity.control_id,
+                        matched_by=matched_by,
+                        signals=signals,
+                    )
                 )
             )
 
@@ -331,6 +567,18 @@ def build_company_classification_report(
                     signals=(),
                 )
             )
+        if is_marketplace:
+            expected_domain_role = "MARKETPLACE"
+        elif len(expected_domain_roles) == 1:
+            expected_domain_role = next(iter(expected_domain_roles))
+        else:
+            expected_domain_role = None
+        if expected_domain_role is None:
+            result_comparison = "NOT_ADJUDICATED"
+        elif domain_classification["role"] == expected_domain_role:
+            result_comparison = "HIT"
+        else:
+            result_comparison = "ERROR"
         result_rows.append(
             {
                 "result_id": _result_id(result),
@@ -338,7 +586,11 @@ def build_company_classification_report(
                 "title": result.title,
                 "query": result.query,
                 "sources_consulted": [result.url],
+                "extracted_content_available": bool(extracted),
+                "domain_classification": domain_classification,
                 "entity_classifications": entity_rows,
+                "expected_domain_role": expected_domain_role,
+                "result_comparison": result_comparison,
             }
         )
 
@@ -415,6 +667,8 @@ def build_company_classification_report(
     return {
         "result_count": len(result_rows),
         "results": result_rows,
+        "role_distribution": _role_distribution(result_rows),
+        "result_error_summary": _result_error_summary(result_rows),
         "ground_truth_comparison": {
             "summary": {
                 "hits": hits,

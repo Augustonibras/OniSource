@@ -9,12 +9,23 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from src.extract.audit import freeze_extract_cache_as_cassette
+from src.extract.budget import ExtractBudget
+from src.extract.cache import CachedExtractProvider
+from src.extract.cassette import (
+    DEFAULT_EXTRACT_CASSETTE_DIR,
+    CassetteExtractProvider,
+)
+from src.extract.models import ExtractResult
+from src.extract.provider import ExtractProvider
+from src.extract.tavily import TavilyExtractProvider
 from src.search.audit import freeze_cache_as_cassette, freeze_run_as_cassette
 from src.search.budget import SearchBudget
 from src.search.cache import CachedSearchProvider
 from src.search.cassette import CassetteSearchProvider
 from src.search.company_evaluation import build_company_classification_report
 from src.search.coverage import build_ground_truth_coverage
+from src.search.extraction_selection import select_extraction_urls
 from src.search.models import SearchResult
 from src.search.provider import SearchProvider
 from src.search.query_builder import QUERY_SET_VERSION, build_search_queries
@@ -88,6 +99,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Deliberately replace all Phase 0 cassettes during a live run",
     )
+    benchmark_parser.add_argument(
+        "--live-extract",
+        action="store_true",
+        help="Call Tavily Extract while replaying search cassettes offline",
+    )
+    benchmark_parser.add_argument(
+        "--refresh-extract-cassettes",
+        action="store_true",
+        help="Deliberately replace Phase 0 extraction cassettes",
+    )
     cassette_parser = subparsers.add_parser(
         "freeze-cassette", help="Freeze a reviewed live response"
     )
@@ -114,6 +135,7 @@ def status_payload() -> dict[str, Any]:
             "search_budget_guard",
             "offline_benchmark",
             "evidence_based_company_evaluation",
+            "extract_provider",
         ],
         "deferred": ["llm"],
     }
@@ -257,13 +279,77 @@ def _group_domains_and_titles(
     }
 
 
+def _extract_batches(urls: list[str], batch_size: int = 20) -> list[list[str]]:
+    return [urls[index : index + batch_size] for index in range(0, len(urls), batch_size)]
+
+
+def _extract_case_content(
+    results: list[SearchResult],
+    provider: ExtractProvider | None,
+    *,
+    provider_mode: str,
+    budget: ExtractBudget | None = None,
+    refresh_cassettes: bool = False,
+) -> tuple[dict[str, str], dict[str, object]]:
+    selected_urls = select_extraction_urls(results)
+    if provider is None:
+        return {}, {
+            "provider_mode": "NOT_AVAILABLE",
+            "url_limit": 40,
+            "candidate_urls": len(selected_urls),
+            "attempted_urls": 0,
+            "successful_urls": 0,
+            "failed_urls": 0,
+            "batches": 0,
+            "cache_hits": 0,
+            "credits_consumed": 0,
+        }
+
+    credits_before = budget.execution_credits if budget is not None else 0
+    extracted: dict[str, str] = {}
+    batches = _extract_batches(selected_urls)
+    cache_hits = 0
+    for batch in batches:
+        batch_results: list[ExtractResult] = provider.extract(batch)
+        if isinstance(provider, CachedExtractProvider):
+            cache_hits += int(provider.last_cache_hit)
+            if refresh_cassettes:
+                freeze_extract_cache_as_cassette(
+                    provider.cache_path(batch),
+                    refresh_cassettes=True,
+                )
+        for item in batch_results:
+            extracted[item.url] = item.raw_content
+
+    return extracted, {
+        "provider_mode": provider_mode,
+        "url_limit": 40,
+        "candidate_urls": len(selected_urls),
+        "attempted_urls": len(selected_urls),
+        "successful_urls": len(extracted),
+        "failed_urls": len(selected_urls) - len(extracted),
+        "batches": len(batches),
+        "cache_hits": cache_hits,
+        "credits_consumed": (
+            budget.execution_credits - credits_before if budget is not None else 0
+        ),
+    }
+
+
 def benchmark_payload(
     *,
     live: bool = False,
     refresh_cassettes: bool = False,
+    live_extract: bool = False,
+    refresh_extract_cassettes: bool = False,
+    extract_cassette_dir: str | Path = DEFAULT_EXTRACT_CASSETTE_DIR,
 ) -> dict[str, Any]:
     if refresh_cassettes and not live:
         raise ValueError("refresh_cassettes requires live=True")
+    if refresh_extract_cassettes and not live_extract:
+        raise ValueError("refresh_extract_cassettes requires live_extract=True")
+    if live and live_extract:
+        raise ValueError("search live and extract live cannot run together")
     budget = SearchBudget() if live else None
     if live:
         live_provider = TavilySearchProvider(budget=budget)
@@ -276,6 +362,25 @@ def benchmark_payload(
         )
     else:
         provider = CassetteSearchProvider()
+
+    extract_budget = ExtractBudget() if live_extract else None
+    extract_path = Path(extract_cassette_dir)
+    if live_extract:
+        live_extract_provider = TavilyExtractProvider(budget=extract_budget)
+        extract_provider: ExtractProvider | None = CachedExtractProvider(
+            live_extract_provider,
+            provider_name=live_extract_provider.provider_name,
+            depth=live_extract_provider.extract_depth,
+            request_parameters=live_extract_provider.request_parameters,
+            refresh=refresh_extract_cassettes,
+        )
+        extract_provider_mode = "live"
+    elif extract_path.is_dir() and any(extract_path.glob("*.json")):
+        extract_provider = CassetteExtractProvider(extract_path)
+        extract_provider_mode = "cassette"
+    else:
+        extract_provider = None
+        extract_provider_mode = "NOT_AVAILABLE"
 
     case_payloads = []
     for case in PHASE_ZERO_CASES:
@@ -296,6 +401,13 @@ def benchmark_payload(
             queries,
             after_query=after_query,
         )
+        extracted_content, extraction = _extract_case_content(
+            results,
+            extract_provider,
+            provider_mode=extract_provider_mode,
+            budget=extract_budget,
+            refresh_cassettes=refresh_extract_cassettes,
+        )
         coverage = build_ground_truth_coverage(category, results)
         case_payloads.append(
             {
@@ -314,19 +426,33 @@ def benchmark_payload(
                 "company_classification": build_company_classification_report(
                     category,
                     results,
+                    extracted_content_by_url=extracted_content,
                 ),
+                "extraction": extraction,
             }
         )
 
     payload: dict[str, Any] = {
         "benchmark": "OniSource Phase 0",
         "provider_mode": "live" if live else "cassette",
+        "extract_provider_mode": extract_provider_mode,
         "query_set_version": QUERY_SET_VERSION,
         "cases": case_payloads,
-        "total_credits_consumed": budget.execution_credits if budget is not None else 0,
+        "total_search_credits_consumed": (
+            budget.execution_credits if budget is not None else 0
+        ),
+        "total_extraction_credits_consumed": (
+            extract_budget.execution_credits if extract_budget is not None else 0
+        ),
+        "total_credits_consumed": (
+            (budget.execution_credits if budget is not None else 0)
+            + (extract_budget.execution_credits if extract_budget is not None else 0)
+        ),
     }
     if budget is not None:
         payload["monthly_credits"] = budget.monthly_credits()
+    if extract_budget is not None:
+        payload["monthly_credits"] = extract_budget.monthly_credits()
     return payload
 
 
@@ -356,9 +482,15 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "benchmark":
         if args.refresh_cassettes and not args.live:
             parser.error("--refresh-cassettes requires --live")
+        if args.refresh_extract_cassettes and not args.live_extract:
+            parser.error("--refresh-extract-cassettes requires --live-extract")
+        if args.live and args.live_extract:
+            parser.error("--live and --live-extract cannot be combined")
         payload = benchmark_payload(
             live=args.live,
             refresh_cassettes=args.refresh_cassettes,
+            live_extract=args.live_extract,
+            refresh_extract_cassettes=args.refresh_extract_cassettes,
         )
     elif args.command == "freeze-cassette":
         cassette_path = freeze_run_as_cassette(
