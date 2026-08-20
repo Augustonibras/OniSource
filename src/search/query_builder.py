@@ -10,6 +10,7 @@ from typing import Mapping
 DEFAULT_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "query_templates.yaml"
 )
+QUERY_SET_VERSION = "phase0-search-v1"
 MAX_QUERIES_PER_CASE = 16
 _TEMPLATE_SECTIONS = (
     "base_templates",

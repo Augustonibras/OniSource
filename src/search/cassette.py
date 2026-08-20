@@ -8,6 +8,7 @@ from .domain_filter import DEFAULT_NOISE_DOMAINS_PATH, SearchDomainFilter
 from .keys import search_storage_key
 from .models import SearchResult
 from .provider import SearchProvider
+from .query_builder import QUERY_SET_VERSION
 
 
 class CassetteNotFoundError(FileNotFoundError):
@@ -27,11 +28,13 @@ class CassetteSearchProvider(SearchProvider):
         *,
         provider_name: str = "tavily",
         search_depth: str = "advanced",
+        query_set_version: str = QUERY_SET_VERSION,
         noise_domains_path: str | Path = DEFAULT_NOISE_DOMAINS_PATH,
     ) -> None:
         self.cassette_dir = Path(cassette_dir)
         self.provider_name = provider_name
         self.search_depth = search_depth
+        self.query_set_version = query_set_version
         self._domain_filter = SearchDomainFilter(noise_domains_path)
 
     def cassette_path(self, query: str, max_results: int = 10) -> Path:
@@ -85,6 +88,7 @@ class CassetteSearchProvider(SearchProvider):
             "query": query,
             "search_depth": self.search_depth,
             "max_results": max_results,
+            "query_set_version": self.query_set_version,
         }
         for field_name, expected_value in expected.items():
             if cassette.get(field_name) != expected_value:
@@ -93,6 +97,8 @@ class CassetteSearchProvider(SearchProvider):
                 )
         if not isinstance(cassette.get("retrieved_at"), str):
             raise CassetteMalformedError(f"Cassette retrieved_at is required: {path}")
+        if not isinstance(cassette.get("captured_at"), str):
+            raise CassetteMalformedError(f"Cassette captured_at is required: {path}")
         if not isinstance(cassette.get("response"), dict):
             raise CassetteMalformedError(f"Cassette response must be an object: {path}")
 
@@ -118,6 +124,10 @@ class CassetteSearchProvider(SearchProvider):
 
         snippet = item.get("content", "")
         content = item.get("raw_content", "")
+        if snippet is None:
+            snippet = ""
+        if content is None:
+            content = ""
         if not isinstance(snippet, str) or not isinstance(content, str):
             raise CassetteMalformedError(f"Cassette result text is invalid: {path}")
 

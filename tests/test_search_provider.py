@@ -11,6 +11,7 @@ from src.search.cassette import (
 )
 from src.search.models import SearchResult
 from src.search.provider import SearchProvider
+from src.search.query_builder import QUERY_SET_VERSION
 
 
 def _write_cassette(
@@ -29,6 +30,8 @@ def _write_cassette(
                 "search_depth": "advanced",
                 "max_results": max_results,
                 "retrieved_at": "2026-08-19T12:00:00Z",
+                "captured_at": "2026-08-19T12:00:00Z",
+                "query_set_version": QUERY_SET_VERSION,
                 "response": {
                     "results": [
                         {
@@ -84,6 +87,33 @@ def test_cassette_provider_rejects_mismatched_cassette(tmp_path) -> None:
 
     with pytest.raises(CassetteMalformedError, match="query does not match"):
         provider.search("expected query")
+
+
+def test_cassette_provider_rejects_mismatched_query_set_version(tmp_path) -> None:
+    provider = CassetteSearchProvider(tmp_path)
+    _write_cassette(provider, "expected query")
+    path = provider.cassette_path("expected query")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["query_set_version"] = "different-version"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(CassetteMalformedError, match="query_set_version"):
+        provider.search("expected query")
+
+
+def test_cassette_provider_normalizes_null_text_like_live_provider(tmp_path) -> None:
+    provider = CassetteSearchProvider(tmp_path)
+    _write_cassette(provider, "query with null text")
+    path = provider.cassette_path("query with null text")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["response"]["results"][0]["content"] = None
+    payload["response"]["results"][0]["raw_content"] = None
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = provider.search("query with null text")[0]
+
+    assert result.snippet == ""
+    assert result.content == ""
 
 
 def test_search_result_requires_utc_iso_timestamp() -> None:

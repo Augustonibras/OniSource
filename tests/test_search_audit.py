@@ -10,6 +10,7 @@ from src.search.audit import (
     freeze_run_as_cassette,
 )
 from src.search.cassette import CassetteSearchProvider
+from src.search.query_builder import QUERY_SET_VERSION
 
 
 def test_reviewed_run_can_be_frozen_and_replayed(tmp_path) -> None:
@@ -46,6 +47,9 @@ def test_reviewed_run_can_be_frozen_and_replayed(tmp_path) -> None:
 
     assert cassette_path.is_file()
     assert replayed[0].content == "full content"
+    cassette = json.loads(cassette_path.read_text(encoding="utf-8"))
+    assert cassette["captured_at"] == "2026-08-19T12:00:00Z"
+    assert cassette["query_set_version"] == QUERY_SET_VERSION
     credit_log = json.loads(
         (response_path.parent / "credits.json").read_text(encoding="utf-8")
     )

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .keys import search_storage_key
+from .query_builder import QUERY_SET_VERSION
 
 
 DEFAULT_RUNS_DIR = Path("runs")
@@ -140,6 +141,7 @@ def freeze_run_as_cassette(
     *,
     cassette_dir: str | Path = DEFAULT_CASSETTES_DIR,
     refresh_cassettes: bool = False,
+    query_set_version: str = QUERY_SET_VERSION,
 ) -> Path:
     source = Path(run_response_path)
     try:
@@ -149,7 +151,14 @@ def freeze_run_as_cassette(
     if not isinstance(payload, dict):
         raise AuditWriteError("Run response must contain a JSON object")
 
-    required = ("provider", "query", "search_depth", "max_results", "response")
+    required = (
+        "provider",
+        "query",
+        "search_depth",
+        "max_results",
+        "retrieved_at",
+        "response",
+    )
     if any(field_name not in payload for field_name in required):
         raise AuditWriteError("Run response is missing cassette metadata")
     key = search_storage_key(
@@ -166,9 +175,20 @@ def freeze_run_as_cassette(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = target.with_suffix(target.suffix + ".tmp")
+    cassette_payload = {
+        **payload,
+        "captured_at": payload["retrieved_at"],
+        "query_set_version": query_set_version,
+    }
     try:
         temporary_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            json.dumps(
+                cassette_payload,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
             encoding="utf-8",
         )
         os.replace(temporary_path, target)

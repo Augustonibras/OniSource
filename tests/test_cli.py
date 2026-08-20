@@ -4,7 +4,13 @@ import sys
 
 import pytest
 
-from research import dry_run_search_payload, load_category, status_payload
+from research import (
+    benchmark_payload,
+    build_parser,
+    dry_run_search_payload,
+    load_category,
+    status_payload,
+)
 
 
 def test_status_declares_external_integrations_deferred() -> None:
@@ -169,3 +175,37 @@ def test_live_search_payload_ends_with_ground_truth_coverage(monkeypatch) -> Non
     assert list(payload)[-1] == "coverage"
     assert payload["coverage"]["negative_appeared"] is False
     assert payload["coverage"]["total"] == "fabricantes 0/4, distribuidores 1/1"
+
+
+def test_search_requires_explicit_live_flag() -> None:
+    parser = build_parser()
+
+    offline = parser.parse_args(
+        ["search", "Phosphoric Acid", "--category", "phosphoric_acid"]
+    )
+    live = parser.parse_args(
+        ["search", "Phosphoric Acid", "--category", "phosphoric_acid", "--live"]
+    )
+
+    assert offline.live is False
+    assert live.live is True
+
+
+def test_phase_zero_benchmark_defaults_to_offline_cassettes(monkeypatch) -> None:
+    import research
+
+    def reject_live_provider(*args, **kwargs):
+        raise AssertionError("offline benchmark must not construct Tavily")
+
+    monkeypatch.setattr(research, "TavilySearchProvider", reject_live_provider)
+
+    payload = benchmark_payload()
+
+    assert payload["provider_mode"] == "cassette"
+    assert payload["query_set_version"] == "phase0-search-v1"
+    assert payload["total_credits_consumed"] == 0
+    assert [case["query_count"] for case in payload["cases"]] == [15, 12]
+    assert payload["cases"][0]["coverage"]["total"] == (
+        "fabricantes 2/3, distribuidores 0/2"
+    )
+    assert payload["cases"][1]["coverage"]["negative_appeared"] is True
