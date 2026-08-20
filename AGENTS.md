@@ -27,3 +27,4 @@
 - Nunca executar comandos que exibam o conteúdo do `.env`, incluindo `cat .env`, `type .env` e `Get-Content .env`.
 - Nunca imprimir o valor de `TAVILY_API_KEY` em logs, mensagens de erro ou saída de terminal.
 - O diagnóstico de leitura de `TAVILY_API_KEY` deve informar somente se a variável foi encontrada ou não, sem revelar seu valor.
+- Quando a suíte completa passar após uma alteração, criar automaticamente um commit local com mensagem descritiva em inglês.

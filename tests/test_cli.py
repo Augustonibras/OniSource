@@ -123,3 +123,49 @@ def test_phase_zero_dry_run_queries_never_contain_category_identifier_underscore
     payload = dry_run_search_payload(product_name, category_identifier)
 
     assert all("_" not in query for query in payload["queries"])
+
+
+def test_live_search_payload_ends_with_ground_truth_coverage(monkeypatch) -> None:
+    import research
+    from src.search.models import SearchResult
+
+    result = SearchResult(
+        url="https://gjchemical.com/phosphoric-acid",
+        title="Phosphoric Acid 75%",
+        snippet="",
+        content="",
+        raw_score=1.0,
+        provider="test",
+        query="test query",
+        retrieved_at="2026-08-20T12:00:00Z",
+    )
+
+    class FakeBudget:
+        execution_credits = 0
+
+        def monthly_credits(self) -> int:
+            return 70
+
+    class FakeLiveProvider:
+        provider_name = "test"
+        search_depth = "advanced"
+
+        def __init__(self, *, budget: FakeBudget) -> None:
+            self.budget = budget
+
+    class FakeCachedProvider:
+        def __init__(self, provider, *, provider_name: str, depth: str) -> None:
+            self.provider = provider
+
+        def search(self, query: str) -> list[SearchResult]:
+            return [result]
+
+    monkeypatch.setattr(research, "SearchBudget", FakeBudget)
+    monkeypatch.setattr(research, "TavilySearchProvider", FakeLiveProvider)
+    monkeypatch.setattr(research, "CachedSearchProvider", FakeCachedProvider)
+
+    payload = research.live_search_payload("Phosphoric Acid", "phosphoric_acid")
+
+    assert list(payload)[-1] == "coverage"
+    assert payload["coverage"]["negative_appeared"] is False
+    assert payload["coverage"]["total"] == "fabricantes 0/4, distribuidores 1/1"

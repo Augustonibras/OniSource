@@ -10,8 +10,10 @@ from typing import Any
 from src.search.audit import freeze_run_as_cassette
 from src.search.budget import SearchBudget
 from src.search.cache import CachedSearchProvider
+from src.search.coverage import build_ground_truth_coverage
 from src.search.query_builder import build_search_queries
 from src.search.tavily import TavilySearchProvider
+from src.simple_yaml import load_yaml_mapping
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -21,78 +23,8 @@ CATEGORY_PATHS = {
 }
 
 
-def _parse_scalar(value: str) -> str | int | float | bool | None:
-    if value.startswith('"') and value.endswith('"'):
-        return json.loads(value)
-    if value in {"true", "false", "null"}:
-        return json.loads(value)
-    try:
-        return int(value)
-    except ValueError:
-        try:
-            return float(value)
-        except ValueError:
-            return value
-
-
-def _parse_yaml_block(
-    lines: list[tuple[int, str]], start: int, indent: int
-) -> tuple[dict[str, Any] | list[Any], int]:
-    is_list = lines[start][1].startswith("- ")
-    result: dict[str, Any] | list[Any] = [] if is_list else {}
-    index = start
-
-    while index < len(lines):
-        line_indent, content = lines[index]
-        if line_indent < indent:
-            break
-        if line_indent != indent:
-            raise ValueError("invalid YAML indentation")
-
-        if is_list:
-            if not content.startswith("- "):
-                raise ValueError("mixed YAML collection types")
-            assert isinstance(result, list)
-            result.append(_parse_scalar(content[2:].strip()))
-            index += 1
-            continue
-
-        if content.startswith("- ") or ":" not in content:
-            raise ValueError("invalid YAML mapping entry")
-        assert isinstance(result, dict)
-        key, raw_value = content.split(":", 1)
-        key = key.strip()
-        raw_value = raw_value.strip()
-        if raw_value:
-            result[key] = _parse_scalar(raw_value)
-            index += 1
-            continue
-
-        index += 1
-        if index >= len(lines) or lines[index][0] <= indent:
-            result[key] = {}
-            continue
-        child_indent = lines[index][0]
-        child, index = _parse_yaml_block(lines, index, child_indent)
-        result[key] = child
-
-    return result, index
-
-
 def load_category(name: str) -> dict[str, Any]:
-    path = CATEGORY_PATHS[name]
-    with path.open("r", encoding="utf-8") as category_file:
-        lines = [
-            (len(raw_line) - len(raw_line.lstrip(" ")), raw_line.strip())
-            for raw_line in category_file
-            if raw_line.strip() and not raw_line.lstrip().startswith("#")
-        ]
-    if not lines:
-        return {}
-    parsed, end = _parse_yaml_block(lines, 0, lines[0][0])
-    if end != len(lines) or not isinstance(parsed, dict):
-        raise ValueError("category YAML must contain one mapping")
-    return parsed
+    return load_yaml_mapping(CATEGORY_PATHS[name])
 
 
 def load_search_category_config(category: str | None) -> dict[str, Any] | None:
@@ -175,19 +107,27 @@ def live_search_payload(
         provider_name=live_provider.provider_name,
         depth=live_provider.search_depth,
     )
-    query_results = [
-        {
-            "query": query,
-            "results": [asdict(result) for result in provider.search(query)],
-        }
-        for query in queries
-    ]
-    return {
+    all_results = []
+    query_results = []
+    for query in queries:
+        results = provider.search(query)
+        all_results.extend(results)
+        query_results.append(
+            {
+                "query": query,
+                "results": [asdict(result) for result in results],
+            }
+        )
+    payload: dict[str, Any] = {
         "dry_run": False,
         "queries": query_results,
         "execution_credits": budget.execution_credits,
         "monthly_credits": budget.monthly_credits(),
     }
+    coverage = build_ground_truth_coverage(category or "", all_results)
+    if coverage is not None:
+        payload["coverage"] = coverage
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -211,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = {"cassette": str(cassette_path), "frozen": True}
     else:
         payload = load_category(args.category)
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 
