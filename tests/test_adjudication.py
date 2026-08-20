@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.search.adjudication import (
+    aggregate_adjudicated_evaluations,
     aggregate_adjudicated_precision,
     evaluate_adjudicated_results,
     load_adjudicated_results,
@@ -8,10 +9,22 @@ from src.search.adjudication import (
 from src.search.marketplace import MarketplaceDomainRegistry
 
 
-def _row(url: str, role: str) -> dict[str, object]:
+def _row(
+    url: str,
+    role: str,
+    *,
+    page_type: str = "COMPANY",
+    reason_codes: list[str] | None = None,
+    evidence: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     return {
         "url": url,
-        "domain_classification": {"role": role},
+        "domain_classification": {
+            "role": role,
+            "page_type": page_type,
+            "reason_codes": reason_codes or [],
+            "evidence": evidence or [],
+        },
     }
 
 
@@ -58,6 +71,17 @@ def test_precision_is_calculated_over_predictions_for_each_role() -> None:
     assert trader["correct"] == 1
     assert trader["predicted"] == 1
     assert trader["precision_percentage"] == 100.0
+    manufacturer_recall = evaluation["recall_by_role"]["MANUFACTURER"]
+    assert manufacturer_recall == {
+        "correct": 1,
+        "human_total": 3,
+        "false_negatives": 2,
+        "recall_percentage": 33.33,
+    }
+    matrix = evaluation["confusion_matrix"]
+    assert "UNKNOWN" in matrix["columns"]
+    assert "NOT_A_COMPANY" in matrix["columns"]
+    assert matrix["values"]["NOT_A_COMPANY"]["MANUFACTURER"] == 1
     assert evaluation["missing"] == 16
 
 
@@ -136,3 +160,90 @@ def test_precision_aggregation_preserves_per_role_denominator() -> None:
     }
     assert combined["DISTRIBUTOR"]["precision_percentage"] == 50.0
     assert combined["TRADER"]["precision_percentage"] == 50.0
+
+
+def test_missed_manufacturer_reports_the_blocking_gate() -> None:
+    adjudicated = load_adjudicated_results("titanium_dioxide")
+    manufacturer = next(
+        item for item in adjudicated if item.domain == "hxtio2.com"
+    )
+    evaluation = evaluate_adjudicated_results(
+        "titanium_dioxide",
+        [
+            _row(
+                manufacturer.url,
+                "UNKNOWN",
+                reason_codes=["MANUFACTURER_POSITIVE_PRODUCTION_SIGNAL_REQUIRED"],
+                evidence=[{"supports": "explicit_manufacturing_evidence"}],
+            )
+        ],
+    )
+
+    assert evaluation["blocked_manufacturers"] == [
+        {
+            "domain": "hxtio2.com",
+            "url": manufacturer.url,
+            "predicted_role": "UNKNOWN",
+            "blocking_gates": [
+                "MANUFACTURER_POSITIVE_PRODUCTION_SIGNAL_REQUIRED"
+            ],
+        },
+        {
+            "domain": "www.lomonbillions.global",
+            "url": next(
+                item.url
+                for item in adjudicated
+                if item.domain == "www.lomonbillions.global"
+            ),
+            "predicted_role": "NOT_FOUND",
+            "blocking_gates": ["RESULT_NOT_FOUND"],
+        },
+        {
+            "domain": "www.mytio2.com",
+            "url": next(
+                item.url for item in adjudicated if item.domain == "www.mytio2.com"
+            ),
+            "predicted_role": "NOT_FOUND",
+            "blocking_gates": ["RESULT_NOT_FOUND"],
+        },
+    ]
+
+
+def test_combined_evaluation_sums_recall_and_confusion_counts() -> None:
+    case_a_label = next(
+        item
+        for item in load_adjudicated_results("titanium_dioxide")
+        if item.domain == "hxtio2.com"
+    )
+    case_b_label = next(
+        item
+        for item in load_adjudicated_results("phosphoric_acid")
+        if item.domain == "www.icl-group.com"
+    )
+    case_a = evaluate_adjudicated_results(
+        "titanium_dioxide",
+        [_row(case_a_label.url, "MANUFACTURER")],
+    )
+    case_b = evaluate_adjudicated_results(
+        "phosphoric_acid",
+        [_row(case_b_label.url, "NOT_A_COMPANY", page_type="MARKET_REPORT")],
+    )
+
+    combined = aggregate_adjudicated_evaluations([case_a, case_b])
+
+    assert combined["adjudicated"] == 40
+    assert combined["matched"] == 2
+    assert combined["recall_by_role"]["MANUFACTURER"] == {
+        "correct": 1,
+        "human_total": 5,
+        "false_negatives": 4,
+        "recall_percentage": 20.0,
+    }
+    assert combined["confusion_matrix"]["values"]["MANUFACTURER"] == {
+        "MANUFACTURER": 1,
+        "DISTRIBUTOR": 0,
+        "TRADER": 0,
+        "UNKNOWN": 0,
+        "NOT_A_COMPANY": 1,
+        "MARKETPLACE": 0,
+    }

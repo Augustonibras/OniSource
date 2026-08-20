@@ -231,6 +231,16 @@ def test_phase_zero_benchmark_defaults_to_offline_cassettes(monkeypatch) -> None
     assert payload["provider_mode"] == "cassette"
     assert payload["query_set_version"] == "phase0-search-v2"
     assert payload["total_credits_consumed"] == 0
+    assert payload["adjudicated_recall_by_role"]["MANUFACTURER"] == {
+        "correct": 2,
+        "human_total": 5,
+        "false_negatives": 3,
+        "recall_percentage": 40.0,
+    }
+    assert payload["adjudicated_confusion_matrix"]["columns"][-2:] == [
+        "NOT_A_COMPANY",
+        "MARKETPLACE",
+    ]
     assert [case["query_count"] for case in payload["cases"]] == [15, 12]
     assert payload["cases"][0]["coverage"]["total"] == (
         "fabricantes 3/3, distribuidores 0/2"

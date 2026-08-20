@@ -20,7 +20,7 @@ from src.extract.models import ExtractResult
 from src.extract.provider import ExtractProvider
 from src.extract.tavily import TavilyExtractProvider
 from src.search.audit import freeze_cache_as_cassette, freeze_run_as_cassette
-from src.search.adjudication import aggregate_adjudicated_precision
+from src.search.adjudication import aggregate_adjudicated_evaluations
 from src.search.budget import SearchBudget
 from src.search.cache import CachedSearchProvider
 from src.search.cassette import CassetteSearchProvider
@@ -433,16 +433,26 @@ def benchmark_payload(
             }
         )
 
+    combined_adjudication = aggregate_adjudicated_evaluations(
+        case["company_classification"]["adjudicated_results_evaluation"]
+        for case in case_payloads
+    )
     payload: dict[str, Any] = {
         "benchmark": "OniSource Phase 0",
         "provider_mode": "live" if live else "cassette",
         "extract_provider_mode": extract_provider_mode,
         "query_set_version": QUERY_SET_VERSION,
         "cases": case_payloads,
-        "adjudicated_precision_by_role": aggregate_adjudicated_precision(
-            case["company_classification"]["adjudicated_results_evaluation"]
-            for case in case_payloads
-        ),
+        "adjudicated_precision_by_role": combined_adjudication[
+            "precision_by_role"
+        ],
+        "adjudicated_recall_by_role": combined_adjudication["recall_by_role"],
+        "adjudicated_confusion_matrix": combined_adjudication[
+            "confusion_matrix"
+        ],
+        "adjudicated_blocked_manufacturers": combined_adjudication[
+            "blocked_manufacturers"
+        ],
         "total_search_credits_consumed": (
             budget.execution_credits if budget is not None else 0
         ),

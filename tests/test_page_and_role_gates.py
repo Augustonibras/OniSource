@@ -61,7 +61,13 @@ def test_page_type_is_assigned_before_commercial_role(
 ) -> None:
     result = _result(url, content, content)
 
-    assert classify_page(result).page_type is expected
+    classification = classify_page(result)
+    assert classification.page_type is expected
+    if expected is PageType.COMPANY:
+        assert classification.evidence_excerpt == ""
+    else:
+        assert classification.evidence_excerpt
+        assert classification.source_type == "COMBINED_PAGE_CONTENT"
 
 
 def test_non_company_page_cannot_receive_commercial_role() -> None:

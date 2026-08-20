@@ -11,12 +11,27 @@ from src.simple_yaml import load_yaml_mapping
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ADJUDICATED_RESULTS_PATH = PROJECT_ROOT / "benchmark" / "adjudicated_results.yaml"
 COMMERCIAL_ROLES = ("MANUFACTURER", "DISTRIBUTOR", "TRADER")
-HUMAN_LABELS = {
+HUMAN_LABEL_ORDER = (
     *COMMERCIAL_ROLES,
     "MARKETPLACE_OR_DIRECTORY",
     "NOT_A_COMPANY",
     "NOT_A_SUPPLIER",
     "UNCERTAIN",
+)
+HUMAN_LABELS = set(HUMAN_LABEL_ORDER)
+PREDICTED_ROLE_COLUMNS = (
+    "MANUFACTURER",
+    "DISTRIBUTOR",
+    "TRADER",
+    "UNKNOWN",
+    "NOT_A_COMPANY",
+    "MARKETPLACE",
+)
+_PRODUCTION_SUPPORTS = {
+    "production_capacity_evidence",
+    "production_process_evidence",
+    "own_plant_location_evidence",
+    "factory_operating_years_evidence",
 }
 
 
@@ -114,6 +129,118 @@ def _percentage(numerator: int, denominator: int) -> float | str:
     return round(numerator / denominator * 100, 2)
 
 
+def _text_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _manufacturer_blocking_gates(
+    classification: Mapping[str, object],
+) -> list[str]:
+    predicted = classification.get("role")
+    if predicted == "MANUFACTURER":
+        return []
+    reason_codes = _text_list(classification.get("reason_codes"))
+    page_type = classification.get("page_type")
+    if isinstance(page_type, str) and page_type != "COMPANY":
+        noncommercial = [
+            code for code in reason_codes if code.startswith("PAGE_TYPE_")
+        ]
+        return noncommercial or [f"PAGE_TYPE_{page_type}_NON_COMMERCIAL"]
+
+    forced_trader = [
+        code
+        for code in reason_codes
+        if code
+        in {
+            "THIRD_PARTY_BRAND_SALE_AUTOMATIC_TRADER",
+            "BROAD_UNRELATED_CHEMICAL_CATALOG_AUTOMATIC_TRADER",
+        }
+    ]
+    if forced_trader:
+        return forced_trader
+
+    raw_evidence = classification.get("evidence")
+    evidence = raw_evidence if isinstance(raw_evidence, list) else []
+    supports = {
+        item.get("supports")
+        for item in evidence
+        if isinstance(item, Mapping) and isinstance(item.get("supports"), str)
+    }
+    if "explicit_manufacturing_evidence" not in supports:
+        return ["EXPLICIT_MANUFACTURING_EVIDENCE_REQUIRED"]
+    if not supports.intersection(_PRODUCTION_SUPPORTS):
+        return ["MANUFACTURER_POSITIVE_PRODUCTION_SIGNAL_REQUIRED"]
+    return reason_codes or [f"PREDICTED_ROLE_{predicted}_BLOCKED_MANUFACTURER"]
+
+
+def _evaluation_metrics(
+    comparisons: list[dict[str, object]],
+) -> dict[str, object]:
+    precision_by_role: dict[str, dict[str, object]] = {}
+    recall_by_role: dict[str, dict[str, object]] = {}
+    for role in COMMERCIAL_ROLES:
+        predicted_rows = [
+            row for row in comparisons if row["predicted_role"] == role
+        ]
+        correct_precision = sum(
+            row["human_label"] == role for row in predicted_rows
+        )
+        predicted_count = len(predicted_rows)
+        precision_by_role[role] = {
+            "correct": correct_precision,
+            "predicted": predicted_count,
+            "false_positives": predicted_count - correct_precision,
+            "precision_percentage": _percentage(
+                correct_precision,
+                predicted_count,
+            ),
+        }
+
+        human_rows = [row for row in comparisons if row["human_label"] == role]
+        correct_recall = sum(row["predicted_role"] == role for row in human_rows)
+        human_count = len(human_rows)
+        recall_by_role[role] = {
+            "correct": correct_recall,
+            "human_total": human_count,
+            "false_negatives": human_count - correct_recall,
+            "recall_percentage": _percentage(correct_recall, human_count),
+        }
+
+    matrix = {
+        human_label: {predicted: 0 for predicted in PREDICTED_ROLE_COLUMNS}
+        for human_label in HUMAN_LABEL_ORDER
+    }
+    for row in comparisons:
+        human_label = row["human_label"]
+        predicted = row["predicted_role"]
+        if human_label in matrix and predicted in PREDICTED_ROLE_COLUMNS:
+            matrix[human_label][predicted] += 1
+
+    blocked_manufacturers = [
+        {
+            "domain": row["domain"],
+            "url": row["url"],
+            "predicted_role": row["predicted_role"],
+            "blocking_gates": row["manufacturer_blocking_gates"],
+        }
+        for row in comparisons
+        if row["human_label"] == "MANUFACTURER"
+        and row["predicted_role"] != "MANUFACTURER"
+    ]
+    return {
+        "precision_by_role": precision_by_role,
+        "recall_by_role": recall_by_role,
+        "confusion_matrix": {
+            "rows": list(HUMAN_LABEL_ORDER),
+            "columns": list(PREDICTED_ROLE_COLUMNS),
+            "values": matrix,
+        },
+        "blocked_manufacturers": blocked_manufacturers,
+    }
+
+
 def evaluate_adjudicated_results(
     category: str,
     result_rows: Iterable[Mapping[str, object]],
@@ -140,6 +267,11 @@ def evaluate_adjudicated_results(
                     "human_label": item.human_label,
                     "predicted_role": "NOT_FOUND",
                     "comparison": "NOT_FOUND",
+                    "manufacturer_blocking_gates": (
+                        ["RESULT_NOT_FOUND"]
+                        if item.human_label == "MANUFACTURER"
+                        else []
+                    ),
                 }
             )
             continue
@@ -156,29 +288,22 @@ def evaluate_adjudicated_results(
                 "human_label": item.human_label,
                 "predicted_role": predicted,
                 "comparison": "HIT" if predicted == item.human_label else "ERROR",
+                "manufacturer_blocking_gates": (
+                    _manufacturer_blocking_gates(classification)
+                    if item.human_label == "MANUFACTURER"
+                    else []
+                ),
             }
         )
 
-    precision_by_role: dict[str, dict[str, object]] = {}
-    for role in COMMERCIAL_ROLES:
-        predicted_rows = [
-            row for row in comparisons if row["predicted_role"] == role
-        ]
-        correct = sum(row["human_label"] == role for row in predicted_rows)
-        predicted_count = len(predicted_rows)
-        precision_by_role[role] = {
-            "correct": correct,
-            "predicted": predicted_count,
-            "false_positives": predicted_count - correct,
-            "precision_percentage": _percentage(correct, predicted_count),
-        }
+    metrics = _evaluation_metrics(comparisons)
 
     return {
         "scope": "HUMAN_ADJUDICATED_RESULTS",
         "adjudicated": len(adjudicated),
         "matched": len(adjudicated) - missing,
         "missing": missing,
-        "precision_by_role": precision_by_role,
+        **metrics,
         "results": comparisons,
     }
 
@@ -215,4 +340,44 @@ def aggregate_adjudicated_precision(
             ),
         }
         for role, stats in totals.items()
+    }
+
+
+def aggregate_adjudicated_evaluations(
+    evaluations: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    """Combine case-level adjudication metrics and confusion counts."""
+
+    items = list(evaluations)
+    combined_results: list[dict[str, object]] = []
+    for evaluation in items:
+        raw_results = evaluation.get("results")
+        if not isinstance(raw_results, list):
+            raise AdjudicationError("adjudication results must be a list")
+        for row in raw_results:
+            if not isinstance(row, dict):
+                raise AdjudicationError("adjudication result row must be a mapping")
+            combined_results.append(row)
+    metrics = _evaluation_metrics(combined_results)
+    return {
+        "scope": "COMBINED_HUMAN_ADJUDICATED_RESULTS",
+        "adjudicated": sum(
+            value
+            for evaluation in items
+            for value in [evaluation.get("adjudicated")]
+            if isinstance(value, int)
+        ),
+        "matched": sum(
+            value
+            for evaluation in items
+            for value in [evaluation.get("matched")]
+            if isinstance(value, int)
+        ),
+        "missing": sum(
+            value
+            for evaluation in items
+            for value in [evaluation.get("missing")]
+            if isinstance(value, int)
+        ),
+        **metrics,
     }

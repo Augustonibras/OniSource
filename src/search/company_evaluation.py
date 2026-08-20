@@ -482,6 +482,8 @@ def _classification_payload(
         "evidence": [_serialize_signal(signal) for signal in signals],
         "page_type": page_classification.page_type.value,
         "page_type_reason_codes": list(page_classification.reason_codes),
+        "page_type_evidence_excerpt": page_classification.evidence_excerpt,
+        "page_type_evidence_source_type": page_classification.source_type,
     }
 
 
@@ -502,6 +504,8 @@ def _marketplace_payload(
         "evidence": [],
         "page_type": page_classification.page_type.value,
         "page_type_reason_codes": list(page_classification.reason_codes),
+        "page_type_evidence_excerpt": page_classification.evidence_excerpt,
+        "page_type_evidence_source_type": page_classification.source_type,
     }
 
 
@@ -524,6 +528,8 @@ def _non_company_payload(
         "evidence": [],
         "page_type": page_classification.page_type.value,
         "page_type_reason_codes": list(page_classification.reason_codes),
+        "page_type_evidence_excerpt": page_classification.evidence_excerpt,
+        "page_type_evidence_source_type": page_classification.source_type,
     }
 
 

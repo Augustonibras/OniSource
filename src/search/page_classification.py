@@ -20,6 +20,8 @@ class PageType(str, Enum):
 class PageClassification:
     page_type: PageType
     reason_codes: tuple[str, ...]
+    evidence_excerpt: str = ""
+    source_type: str = ""
 
 
 _MARKET_REPORT_PATTERNS = (
@@ -87,27 +89,51 @@ def classify_page(
         if value
     )
     if any(pattern.search(text) for pattern in _MARKET_REPORT_PATTERNS):
+        match = next(
+            pattern.search(text)
+            for pattern in _MARKET_REPORT_PATTERNS
+            if pattern.search(text) is not None
+        )
+        assert match is not None
         return PageClassification(
             PageType.MARKET_REPORT,
             ("PAGE_SIGNALS_MARKET_REPORT",),
+            text[max(0, match.start() - 80) : match.end() + 160].strip(),
+            "COMBINED_PAGE_CONTENT",
         )
     if any(pattern.search(text) for pattern in _TRADE_DATA_PATTERNS):
+        match = next(
+            pattern.search(text)
+            for pattern in _TRADE_DATA_PATTERNS
+            if pattern.search(text) is not None
+        )
+        assert match is not None
         return PageClassification(
             PageType.TRADE_DATA_PLATFORM,
             ("PAGE_SIGNALS_TRADE_DATA_PLATFORM",),
+            text[max(0, match.start() - 80) : match.end() + 160].strip(),
+            "COMBINED_PAGE_CONTENT",
         )
     if (
         re.search(r"\bassociation\b", result.title, re.IGNORECASE)
         and _ASSOCIATION_AND_MEMBERS_PATTERN.search(text)
     ):
+        match = _ASSOCIATION_AND_MEMBERS_PATTERN.search(text)
+        assert match is not None
         return PageClassification(
             PageType.ASSOCIATION,
             ("PAGE_SIGNALS_ASSOCIATION_AND_MEMBERS",),
+            text[max(0, match.start() - 80) : match.end() + 160].strip(),
+            "COMBINED_PAGE_CONTENT",
         )
     if _NEWS_PATTERN.search(text):
+        match = _NEWS_PATTERN.search(text)
+        assert match is not None
         return PageClassification(
             PageType.NEWS,
             ("PAGE_SIGNALS_NEWS_EVENT",),
+            text[max(0, match.start() - 80) : match.end() + 160].strip(),
+            "COMBINED_PAGE_CONTENT",
         )
     return PageClassification(PageType.COMPANY, ("PAGE_DEFAULT_COMPANY",))
 
