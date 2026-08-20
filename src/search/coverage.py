@@ -33,6 +33,7 @@ class BenchmarkEntity:
     expected_role: str | None
     domains: tuple[str, ...]
     negative: bool
+    must_not_be: tuple[str, ...]
 
 
 BENCHMARK_SOURCES = {
@@ -101,6 +102,23 @@ def _load_entities(category: str) -> list[BenchmarkEntity] | None:
                         )
                     )
             negative = source.negative or raw_control.get("entity_type") == "COMPANY_DIRECTORY"
+            raw_must_not_be = raw_control.get("must_not_be", ())
+            if isinstance(raw_must_not_be, str):
+                must_not_be = (raw_must_not_be,)
+            elif isinstance(raw_must_not_be, list):
+                must_not_be = tuple(
+                    _required_text(
+                        item,
+                        field_name=f"{control_id} must_not_be item",
+                    )
+                    for item in raw_must_not_be
+                )
+            elif raw_must_not_be in (None, ()):
+                must_not_be = ()
+            else:
+                raise GroundTruthCoverageError(
+                    f"benchmark {control_id} must_not_be must be text or a list"
+                )
             entities.append(
                 BenchmarkEntity(
                     control_id=control_id,
@@ -108,9 +126,17 @@ def _load_entities(category: str) -> list[BenchmarkEntity] | None:
                     expected_role=expected_role,
                     domains=tuple(domains),
                     negative=negative,
+                    must_not_be=must_not_be,
                 )
             )
     return entities
+
+
+def load_benchmark_entities(category: str) -> tuple[BenchmarkEntity, ...] | None:
+    """Load human-provided entity identities and labels without modifying them."""
+
+    entities = _load_entities(category)
+    return tuple(entities) if entities is not None else None
 
 
 def _normalize_domain(domain: str) -> str:
@@ -132,6 +158,28 @@ def _domain_matches(returned_domain: str, expected_domain: str) -> bool:
     return returned == expected or returned.endswith(f".{expected}")
 
 
+def match_benchmark_entity(
+    entity: BenchmarkEntity,
+    result: SearchResult,
+) -> tuple[str, ...]:
+    """Return identity-match signals only; expected roles are never consulted."""
+
+    returned_domain = (urlsplit(result.url).hostname or "").casefold()
+    searchable_name = _normalize_name(
+        f"{returned_domain} {result.title} {result.url}"
+    )
+    matched_by: set[str] = set()
+    if any(
+        _domain_matches(returned_domain, expected_domain)
+        for expected_domain in entity.domains
+    ):
+        matched_by.add("domain")
+    normalized_entity_name = _normalize_name(entity.name)
+    if normalized_entity_name and normalized_entity_name in searchable_name:
+        matched_by.add("name")
+    return tuple(sorted(matched_by))
+
+
 def _role_group(expected_role: str | None) -> str | None:
     if expected_role is None:
         return None
@@ -146,15 +194,11 @@ def build_ground_truth_coverage(
     category: str,
     results: Iterable[SearchResult],
 ) -> dict[str, object] | None:
-    entities = _load_entities(category)
+    entities = load_benchmark_entities(category)
     if entities is None:
         return None
 
-    indexed_results: list[tuple[str, str]] = []
-    for result in results:
-        domain = (urlsplit(result.url).hostname or "").casefold()
-        searchable_name = _normalize_name(f"{domain} {result.title} {result.url}")
-        indexed_results.append((domain, searchable_name))
+    indexed_results = list(results)
 
     entity_rows: list[dict[str, object]] = []
     totals = {
@@ -166,22 +210,13 @@ def build_ground_truth_coverage(
     for entity in entities:
         matched_by: set[str] = set()
         matched_domains: set[str] = set()
-        normalized_entity_name = _normalize_name(entity.name)
-        for returned_domain, searchable_name in indexed_results:
-            domain_match = any(
-                _domain_matches(returned_domain, expected_domain)
-                for expected_domain in entity.domains
-            )
-            name_match = bool(
-                normalized_entity_name
-                and normalized_entity_name in searchable_name
-            )
-            if domain_match:
-                matched_by.add("domain")
-            if name_match:
-                matched_by.add("name")
-            if domain_match or name_match:
-                matched_domains.add(returned_domain)
+        for result in indexed_results:
+            result_match = match_benchmark_entity(entity, result)
+            if result_match:
+                matched_by.update(result_match)
+                matched_domains.add(
+                    (urlsplit(result.url).hostname or "").casefold()
+                )
 
         found = bool(matched_domains)
         if entity.negative and found:

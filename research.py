@@ -13,6 +13,7 @@ from src.search.audit import freeze_cache_as_cassette, freeze_run_as_cassette
 from src.search.budget import SearchBudget
 from src.search.cache import CachedSearchProvider
 from src.search.cassette import CassetteSearchProvider
+from src.search.company_evaluation import build_company_classification_report
 from src.search.coverage import build_ground_truth_coverage
 from src.search.models import SearchResult
 from src.search.provider import SearchProvider
@@ -112,6 +113,7 @@ def status_payload() -> dict[str, Any]:
             "search_query_builder",
             "search_budget_guard",
             "offline_benchmark",
+            "evidence_based_company_evaluation",
         ],
         "deferred": ["llm"],
     }
@@ -169,6 +171,10 @@ def live_search_payload(
         "queries": query_results,
         "execution_credits": budget.execution_credits,
         "monthly_credits": budget.monthly_credits(),
+        "company_classification": build_company_classification_report(
+            category or "",
+            all_results,
+        ),
     }
     coverage = build_ground_truth_coverage(category or "", all_results)
     if coverage is not None:
@@ -192,6 +198,10 @@ def cassette_search_payload(
         "dry_run": False,
         "queries": query_results,
         "execution_credits": 0,
+        "company_classification": build_company_classification_report(
+            category or "",
+            all_results,
+        ),
     }
     coverage = build_ground_truth_coverage(category or "", all_results)
     if coverage is not None:
@@ -301,6 +311,10 @@ def benchmark_payload(
                 "errors_by_type": {},
                 "domains": _group_domains_and_titles(results),
                 "coverage": coverage,
+                "company_classification": build_company_classification_report(
+                    category,
+                    results,
+                ),
             }
         )
 

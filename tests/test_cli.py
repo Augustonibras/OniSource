@@ -223,6 +223,41 @@ def test_phase_zero_benchmark_defaults_to_offline_cassettes(monkeypatch) -> None
     assert payload["cases"][1]["coverage"]["negative_appeared"] is True
 
 
+def test_offline_benchmark_classifies_results_and_compares_ground_truth() -> None:
+    payload = benchmark_payload()
+
+    for case in payload["cases"]:
+        classification = case["company_classification"]
+        assert classification["result_count"] > 0
+        assert len(classification["results"]) == classification["result_count"]
+        assert all(
+            result["entity_classifications"]
+            for result in classification["results"]
+        )
+
+    case_a = payload["cases"][0]["company_classification"]
+    case_b = payload["cases"][1]["company_classification"]
+    assert case_a["result_count"] == 150
+    assert case_a["ground_truth_comparison"]["summary"] == {
+        "hits": 3,
+        "errors": 0,
+        "not_found": 2,
+        "evaluated": 3,
+    }
+    assert case_b["result_count"] == 119
+    assert case_b["ground_truth_comparison"]["summary"] == {
+        "hits": 2,
+        "errors": 0,
+        "not_found": 5,
+        "evaluated": 2,
+    }
+    assert case_b["ground_truth_comparison"]["negative"] == {
+        "appeared": True,
+        "violations": 0,
+        "behavior": "PASS",
+    }
+
+
 def test_refresh_cassettes_requires_explicit_live_mode() -> None:
     with pytest.raises(ValueError, match="requires live"):
         benchmark_payload(refresh_cassettes=True)
