@@ -65,6 +65,25 @@ def test_cache_key_changes_with_max_results(tmp_path) -> None:
     assert first_path != second_path
 
 
+def test_cache_key_changes_with_search_depth(tmp_path) -> None:
+    budget = SearchBudget(tmp_path / "credit_usage.json")
+    inner = CountingProvider(budget)
+    advanced = CachedSearchProvider(
+        inner,
+        provider_name="fake",
+        depth="advanced",
+        cache_dir=tmp_path / "search",
+    )
+    basic = CachedSearchProvider(
+        inner,
+        provider_name="fake",
+        depth="basic",
+        cache_dir=tmp_path / "search",
+    )
+
+    assert advanced.cache_path("test query") != basic.cache_path("test query")
+
+
 def test_cache_value_is_json_and_preserves_normalized_response(tmp_path) -> None:
     budget = SearchBudget(tmp_path / "credit_usage.json")
     provider = CachedSearchProvider(
@@ -80,5 +99,37 @@ def test_cache_value_is_json_and_preserves_normalized_response(tmp_path) -> None
     assert payload["provider"] == "fake"
     assert payload["query"] == "test query"
     assert payload["search_depth"] == "advanced"
+    assert payload["request_parameters"] == {}
     assert payload["format"] == "normalized_search_results"
     assert payload["results"][0]["url"] == "https://example.com"
+
+
+def test_changing_exclude_domains_produces_cache_miss(tmp_path) -> None:
+    budget = SearchBudget(tmp_path / "credit_usage.json")
+    inner = CountingProvider(budget)
+    first = CachedSearchProvider(
+        inner,
+        provider_name="fake",
+        depth="advanced",
+        request_parameters={
+            "include_raw_content": True,
+            "exclude_domains": ["wikipedia.org"],
+        },
+        cache_dir=tmp_path / "search",
+    )
+    changed = CachedSearchProvider(
+        inner,
+        provider_name="fake",
+        depth="advanced",
+        request_parameters={
+            "include_raw_content": True,
+            "exclude_domains": ["wikipedia.org", "statista.com"],
+        },
+        cache_dir=tmp_path / "search",
+    )
+
+    first.search("test query")
+    changed.search("test query")
+
+    assert inner.calls == 2
+    assert len(list((tmp_path / "search").glob("*.json"))) == 2

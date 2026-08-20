@@ -36,6 +36,10 @@ class CassetteSearchProvider(SearchProvider):
         self.search_depth = search_depth
         self.query_set_version = query_set_version
         self._domain_filter = SearchDomainFilter(noise_domains_path)
+        self.request_parameters = {
+            "include_raw_content": True,
+            "exclude_domains": list(self._domain_filter.exclude_domains),
+        }
 
     def cassette_path(self, query: str, max_results: int = 10) -> Path:
         key = search_storage_key(
@@ -43,6 +47,7 @@ class CassetteSearchProvider(SearchProvider):
             query,
             self.search_depth,
             max_results,
+            self.request_parameters,
         )
         return self.cassette_dir / f"{key}.json"
 
@@ -88,6 +93,7 @@ class CassetteSearchProvider(SearchProvider):
             "query": query,
             "search_depth": self.search_depth,
             "max_results": max_results,
+            "request_parameters": self.request_parameters,
             "query_set_version": self.query_set_version,
         }
         for field_name, expected_value in expected.items():

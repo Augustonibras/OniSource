@@ -98,6 +98,13 @@ class TavilySearchProvider(SearchProvider):
             raise MalformedResponseError("No successful Tavily response is available")
         return self._last_retrieved_at
 
+    @property
+    def request_parameters(self) -> dict[str, Any]:
+        return {
+            "include_raw_content": True,
+            "exclude_domains": list(self._domain_filter.exclude_domains),
+        }
+
     def search(self, query: str, max_results: int = 10) -> list[SearchResult]:
         if not query.strip():
             raise ValueError("query is required")
@@ -109,8 +116,7 @@ class TavilySearchProvider(SearchProvider):
             "query": query,
             "search_depth": self.search_depth,
             "max_results": max_results,
-            "include_raw_content": True,
-            "exclude_domains": list(self._domain_filter.exclude_domains),
+            **self.request_parameters,
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -188,6 +194,7 @@ class TavilySearchProvider(SearchProvider):
                 monthly_credits=self._budget.monthly_credits(),
                 retries=retries,
                 error_counts=error_counts,
+                request_parameters=self.request_parameters,
             )
             return results
 
@@ -223,6 +230,7 @@ class TavilySearchProvider(SearchProvider):
             monthly_credits=self._budget.monthly_credits(),
             retries=retries,
             error_counts=dict(error_counts),
+            request_parameters=self.request_parameters,
         )
 
     def _post(

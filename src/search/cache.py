@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 from .keys import search_storage_key
 from .models import SearchResult
@@ -43,12 +43,16 @@ class CachedSearchProvider(SearchProvider):
         *,
         provider_name: str,
         depth: str,
+        request_parameters: Mapping[str, Any] | None = None,
         cache_dir: str | Path = DEFAULT_SEARCH_CACHE_DIR,
+        refresh: bool = False,
     ) -> None:
         self.provider = provider
         self.provider_name = provider_name
         self.depth = depth
+        self.request_parameters = dict(request_parameters or {})
         self.cache_dir = Path(cache_dir)
+        self.refresh = refresh
 
     def cache_path(self, query: str, max_results: int = 10) -> Path:
         key = search_storage_key(
@@ -56,12 +60,13 @@ class CachedSearchProvider(SearchProvider):
             query,
             self.depth,
             max_results,
+            self.request_parameters,
         )
         return self.cache_dir / f"{key}.json"
 
     def search(self, query: str, max_results: int = 10) -> list[SearchResult]:
         path = self.cache_path(query, max_results)
-        if path.is_file():
+        if path.is_file() and not self.refresh:
             return self._read(path, query, max_results)
 
         results = self.provider.search(query, max_results)
@@ -80,6 +85,7 @@ class CachedSearchProvider(SearchProvider):
             "query": query,
             "search_depth": self.depth,
             "max_results": max_results,
+            "request_parameters": self.request_parameters,
         }
         if isinstance(self.provider, RawResponseCacheCodec):
             envelope.update(
@@ -116,6 +122,7 @@ class CachedSearchProvider(SearchProvider):
             "query": query,
             "search_depth": self.depth,
             "max_results": max_results,
+            "request_parameters": self.request_parameters,
         }
         for field_name, expected_value in expected.items():
             if payload.get(field_name) != expected_value:

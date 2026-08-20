@@ -202,6 +202,7 @@ def test_tavily_raw_json_cache_hit_avoids_network_and_credit_charge(tmp_path) ->
         live_provider,
         provider_name="tavily",
         depth="advanced",
+        request_parameters=live_provider.request_parameters,
         cache_dir=tmp_path / "cache",
     )
 
@@ -215,4 +216,5 @@ def test_tavily_raw_json_cache_hit_avoids_network_and_credit_charge(tmp_path) ->
     assert len(session.calls) == 1
     assert budget.execution_credits == 2
     assert cache_payload["format"] == "raw_provider_response"
+    assert cache_payload["request_parameters"] == live_provider.request_parameters
     assert cache_payload["response"] == _valid_response()

@@ -32,6 +32,7 @@ def _write_cassette(
                 "retrieved_at": "2026-08-19T12:00:00Z",
                 "captured_at": "2026-08-19T12:00:00Z",
                 "query_set_version": QUERY_SET_VERSION,
+                "request_parameters": provider.request_parameters,
                 "response": {
                     "results": [
                         {

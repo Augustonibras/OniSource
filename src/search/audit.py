@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .keys import search_storage_key
 from .query_builder import QUERY_SET_VERSION
@@ -39,12 +39,14 @@ class RunRecorder:
         monthly_credits: int,
         retries: int = 0,
         error_counts: dict[str, int] | None = None,
+        request_parameters: Mapping[str, Any] | None = None,
     ) -> Path:
         storage_key = search_storage_key(
             provider,
             query,
             search_depth,
             max_results,
+            request_parameters,
         )
         timestamp = retrieved_at.replace(":", "").replace("-", "").replace(".", "")
         run_dir = self.runs_dir / f"{timestamp}_{storage_key[:12]}"
@@ -55,6 +57,7 @@ class RunRecorder:
             "query": query,
             "search_depth": search_depth,
             "max_results": max_results,
+            "request_parameters": dict(request_parameters or {}),
             "retrieved_at": retrieved_at,
             "response": raw_response,
         }
@@ -94,12 +97,14 @@ class RunRecorder:
         monthly_credits: int,
         retries: int,
         error_counts: dict[str, int],
+        request_parameters: Mapping[str, Any] | None = None,
     ) -> Path:
         storage_key = search_storage_key(
             provider,
             query,
             search_depth,
             max_results,
+            request_parameters,
         )
         timestamp = retrieved_at.replace(":", "").replace("-", "").replace(".", "")
         run_dir = self.runs_dir / f"{timestamp}_{storage_key[:12]}"
@@ -110,6 +115,7 @@ class RunRecorder:
             "query": query,
             "search_depth": search_depth,
             "max_results": max_results,
+            "request_parameters": dict(request_parameters or {}),
             "retrieved_at": retrieved_at,
             "error_type": error_type,
         }
@@ -156,18 +162,74 @@ def freeze_run_as_cassette(
         "query",
         "search_depth",
         "max_results",
+        "request_parameters",
         "retrieved_at",
         "response",
     )
     if any(field_name not in payload for field_name in required):
         raise AuditWriteError("Run response is missing cassette metadata")
+    return _write_cassette_payload(
+        payload,
+        cassette_dir=Path(cassette_dir),
+        refresh_cassettes=refresh_cassettes,
+        query_set_version=query_set_version,
+    )
+
+
+def freeze_cache_as_cassette(
+    cache_path: str | Path,
+    *,
+    cassette_dir: str | Path = DEFAULT_CASSETTES_DIR,
+    refresh_cassettes: bool = False,
+    query_set_version: str = QUERY_SET_VERSION,
+) -> Path:
+    source = Path(cache_path)
+    try:
+        cache_payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise AuditWriteError(f"Could not read search cache: {source}") from error
+    required = (
+        "provider",
+        "query",
+        "search_depth",
+        "max_results",
+        "request_parameters",
+        "retrieved_at",
+        "response",
+    )
+    if (
+        not isinstance(cache_payload, dict)
+        or cache_payload.get("format") != "raw_provider_response"
+        or any(field_name not in cache_payload for field_name in required)
+    ):
+        raise AuditWriteError("Search cache is missing raw cassette metadata")
+    cassette_payload = {
+        field_name: cache_payload[field_name]
+        for field_name in required
+    }
+    return _write_cassette_payload(
+        cassette_payload,
+        cassette_dir=Path(cassette_dir),
+        refresh_cassettes=refresh_cassettes,
+        query_set_version=query_set_version,
+    )
+
+
+def _write_cassette_payload(
+    payload: dict[str, Any],
+    *,
+    cassette_dir: Path,
+    refresh_cassettes: bool,
+    query_set_version: str,
+) -> Path:
     key = search_storage_key(
         payload["provider"],
         payload["query"],
         payload["search_depth"],
         payload["max_results"],
+        payload["request_parameters"],
     )
-    target = Path(cassette_dir) / f"{key}.json"
+    target = cassette_dir / f"{key}.json"
     if target.exists() and not refresh_cassettes:
         raise CassetteOverwriteError(
             f"Cassette already exists; use --refresh-cassettes to replace it: {target}"

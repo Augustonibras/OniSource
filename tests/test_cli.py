@@ -155,12 +155,24 @@ def test_live_search_payload_ends_with_ground_truth_coverage(monkeypatch) -> Non
     class FakeLiveProvider:
         provider_name = "test"
         search_depth = "advanced"
+        request_parameters = {
+            "include_raw_content": True,
+            "exclude_domains": [],
+        }
 
         def __init__(self, *, budget: FakeBudget) -> None:
             self.budget = budget
 
     class FakeCachedProvider:
-        def __init__(self, provider, *, provider_name: str, depth: str) -> None:
+        def __init__(
+            self,
+            provider,
+            *,
+            provider_name: str,
+            depth: str,
+            request_parameters,
+            refresh: bool,
+        ) -> None:
             self.provider = provider
 
         def search(self, query: str) -> list[SearchResult]:
@@ -202,10 +214,15 @@ def test_phase_zero_benchmark_defaults_to_offline_cassettes(monkeypatch) -> None
     payload = benchmark_payload()
 
     assert payload["provider_mode"] == "cassette"
-    assert payload["query_set_version"] == "phase0-search-v1"
+    assert payload["query_set_version"] == "phase0-search-v2"
     assert payload["total_credits_consumed"] == 0
     assert [case["query_count"] for case in payload["cases"]] == [15, 12]
     assert payload["cases"][0]["coverage"]["total"] == (
-        "fabricantes 2/3, distribuidores 0/2"
+        "fabricantes 3/3, distribuidores 0/2"
     )
     assert payload["cases"][1]["coverage"]["negative_appeared"] is True
+
+
+def test_refresh_cassettes_requires_explicit_live_mode() -> None:
+    with pytest.raises(ValueError, match="requires live"):
+        benchmark_payload(refresh_cassettes=True)

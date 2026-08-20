@@ -6,10 +6,10 @@ import sys
 from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from src.search.audit import freeze_run_as_cassette
+from src.search.audit import freeze_cache_as_cassette, freeze_run_as_cassette
 from src.search.budget import SearchBudget
 from src.search.cache import CachedSearchProvider
 from src.search.cassette import CassetteSearchProvider
@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Call Tavily explicitly instead of replaying committed cassettes",
     )
+    search_parser.add_argument(
+        "--refresh-cassettes",
+        action="store_true",
+        help="Deliberately replace cassettes after an explicit live search",
+    )
     benchmark_parser = subparsers.add_parser(
         "benchmark",
         help="Run both Phase 0 cases offline against committed cassettes",
@@ -76,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--live",
         action="store_true",
         help="Call Tavily explicitly instead of replaying committed cassettes",
+    )
+    benchmark_parser.add_argument(
+        "--refresh-cassettes",
+        action="store_true",
+        help="Deliberately replace all Phase 0 cassettes during a live run",
     )
     cassette_parser = subparsers.add_parser(
         "freeze-cassette", help="Freeze a reviewed live response"
@@ -126,6 +136,8 @@ def dry_run_search_payload(
 def live_search_payload(
     product_name: str,
     category: str | None = None,
+    *,
+    refresh_cassettes: bool = False,
 ) -> dict[str, Any]:
     queries = build_search_queries(
         product_name,
@@ -138,8 +150,19 @@ def live_search_payload(
         live_provider,
         provider_name=live_provider.provider_name,
         depth=live_provider.search_depth,
+        request_parameters=live_provider.request_parameters,
+        refresh=refresh_cassettes,
     )
-    query_results, all_results = _execute_queries(provider, queries)
+    after_query = (
+        _cassette_refresh_callback(provider)
+        if refresh_cassettes
+        else None
+    )
+    query_results, all_results = _execute_queries(
+        provider,
+        queries,
+        after_query=after_query,
+    )
     payload: dict[str, Any] = {
         "provider_mode": "live",
         "dry_run": False,
@@ -179,11 +202,15 @@ def cassette_search_payload(
 def _execute_queries(
     provider: SearchProvider,
     queries: list[str],
+    *,
+    after_query: Callable[[str, int], None] | None = None,
 ) -> tuple[list[dict[str, object]], list[SearchResult]]:
     query_results: list[dict[str, object]] = []
     all_results: list[SearchResult] = []
     for query in queries:
         results = provider.search(query)
+        if after_query is not None:
+            after_query(query, 10)
         all_results.extend(results)
         query_results.append(
             {
@@ -192,6 +219,18 @@ def _execute_queries(
             }
         )
     return query_results, all_results
+
+
+def _cassette_refresh_callback(
+    provider: CachedSearchProvider,
+) -> Callable[[str, int], None]:
+    def freeze(query: str, max_results: int) -> None:
+        freeze_cache_as_cassette(
+            provider.cache_path(query, max_results),
+            refresh_cassettes=True,
+        )
+
+    return freeze
 
 
 def _group_domains_and_titles(
@@ -208,7 +247,13 @@ def _group_domains_and_titles(
     }
 
 
-def benchmark_payload(*, live: bool = False) -> dict[str, Any]:
+def benchmark_payload(
+    *,
+    live: bool = False,
+    refresh_cassettes: bool = False,
+) -> dict[str, Any]:
+    if refresh_cassettes and not live:
+        raise ValueError("refresh_cassettes requires live=True")
     budget = SearchBudget() if live else None
     if live:
         live_provider = TavilySearchProvider(budget=budget)
@@ -216,6 +261,8 @@ def benchmark_payload(*, live: bool = False) -> dict[str, Any]:
             live_provider,
             provider_name=live_provider.provider_name,
             depth=live_provider.search_depth,
+            request_parameters=live_provider.request_parameters,
+            refresh=refresh_cassettes,
         )
     else:
         provider = CassetteSearchProvider()
@@ -229,7 +276,16 @@ def benchmark_payload(*, live: bool = False) -> dict[str, Any]:
             category_config=load_search_category_config(category),
         )
         credits_before = budget.execution_credits if budget is not None else 0
-        _, results = _execute_queries(provider, queries)
+        after_query = (
+            _cassette_refresh_callback(provider)
+            if refresh_cassettes and isinstance(provider, CachedSearchProvider)
+            else None
+        )
+        _, results = _execute_queries(
+            provider,
+            queries,
+            after_query=after_query,
+        )
         coverage = build_ground_truth_coverage(category, results)
         case_payloads.append(
             {
@@ -271,14 +327,25 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "search":
         if args.dry_run and args.live:
             parser.error("--dry-run and --live cannot be used together")
+        if args.refresh_cassettes and not args.live:
+            parser.error("--refresh-cassettes requires --live")
         if args.dry_run:
             payload = dry_run_search_payload(args.product_name, args.category)
         elif args.live:
-            payload = live_search_payload(args.product_name, args.category)
+            payload = live_search_payload(
+                args.product_name,
+                args.category,
+                refresh_cassettes=args.refresh_cassettes,
+            )
         else:
             payload = cassette_search_payload(args.product_name, args.category)
     elif args.command == "benchmark":
-        payload = benchmark_payload(live=args.live)
+        if args.refresh_cassettes and not args.live:
+            parser.error("--refresh-cassettes requires --live")
+        payload = benchmark_payload(
+            live=args.live,
+            refresh_cassettes=args.refresh_cassettes,
+        )
     elif args.command == "freeze-cassette":
         cassette_path = freeze_run_as_cassette(
             args.run_response,

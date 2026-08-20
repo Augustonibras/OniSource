@@ -7,6 +7,7 @@ import pytest
 from src.search.audit import (
     CassetteOverwriteError,
     RunRecorder,
+    freeze_cache_as_cassette,
     freeze_run_as_cassette,
 )
 from src.search.cassette import CassetteSearchProvider
@@ -14,6 +15,7 @@ from src.search.query_builder import QUERY_SET_VERSION
 
 
 def test_reviewed_run_can_be_frozen_and_replayed(tmp_path) -> None:
+    cassette_provider = CassetteSearchProvider(tmp_path / "cassettes")
     recorder = RunRecorder(tmp_path / "runs")
     response_path = recorder.record_success(
         provider="tavily",
@@ -35,13 +37,14 @@ def test_reviewed_run_can_be_frozen_and_replayed(tmp_path) -> None:
         charged_credits=2,
         execution_credits=2,
         monthly_credits=2,
+        request_parameters=cassette_provider.request_parameters,
     )
 
     cassette_path = freeze_run_as_cassette(
         response_path,
         cassette_dir=tmp_path / "cassettes",
     )
-    replayed = CassetteSearchProvider(tmp_path / "cassettes").search(
+    replayed = cassette_provider.search(
         "phosphoric acid manufacturer"
     )
 
@@ -59,6 +62,7 @@ def test_reviewed_run_can_be_frozen_and_replayed(tmp_path) -> None:
 
 
 def test_existing_cassette_requires_explicit_refresh(tmp_path) -> None:
+    cassette_provider = CassetteSearchProvider(tmp_path / "cassettes")
     recorder = RunRecorder(tmp_path / "runs")
     response_path = recorder.record_success(
         provider="tavily",
@@ -70,6 +74,7 @@ def test_existing_cassette_requires_explicit_refresh(tmp_path) -> None:
         charged_credits=2,
         execution_credits=2,
         monthly_credits=2,
+        request_parameters=cassette_provider.request_parameters,
     )
     cassette_dir = tmp_path / "cassettes"
     freeze_run_as_cassette(response_path, cassette_dir=cassette_dir)
@@ -83,3 +88,33 @@ def test_existing_cassette_requires_explicit_refresh(tmp_path) -> None:
         refresh_cassettes=True,
     )
     assert refreshed.is_file()
+
+
+def test_raw_cache_can_be_frozen_with_request_fingerprint(tmp_path) -> None:
+    cassette_provider = CassetteSearchProvider(tmp_path / "cassettes")
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "provider": "tavily",
+                "query": "test query",
+                "search_depth": "advanced",
+                "max_results": 10,
+                "request_parameters": cassette_provider.request_parameters,
+                "format": "raw_provider_response",
+                "retrieved_at": "2026-08-20T12:00:00Z",
+                "response": {"results": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cassette_path = freeze_cache_as_cassette(
+        cache_path,
+        cassette_dir=tmp_path / "cassettes",
+        refresh_cassettes=True,
+    )
+
+    payload = json.loads(cassette_path.read_text(encoding="utf-8"))
+    assert payload["request_parameters"] == cassette_provider.request_parameters
+    assert payload["query_set_version"] == QUERY_SET_VERSION
