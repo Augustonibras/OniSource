@@ -20,6 +20,7 @@ from src.extract.models import ExtractResult
 from src.extract.provider import ExtractProvider
 from src.extract.tavily import TavilyExtractProvider
 from src.search.audit import freeze_cache_as_cassette, freeze_run_as_cassette
+from src.search.adjudication import aggregate_adjudicated_precision
 from src.search.budget import SearchBudget
 from src.search.cache import CachedSearchProvider
 from src.search.cassette import CassetteSearchProvider
@@ -438,6 +439,10 @@ def benchmark_payload(
         "extract_provider_mode": extract_provider_mode,
         "query_set_version": QUERY_SET_VERSION,
         "cases": case_payloads,
+        "adjudicated_precision_by_role": aggregate_adjudicated_precision(
+            case["company_classification"]["adjudicated_results_evaluation"]
+            for case in case_payloads
+        ),
         "total_search_credits_consumed": (
             budget.execution_credits if budget is not None else 0
         ),

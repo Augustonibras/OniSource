@@ -16,6 +16,7 @@ from src.models import (
     Evidence,
 )
 
+from .adjudication import evaluate_adjudicated_results
 from .coverage import (
     BenchmarkEntity,
     load_benchmark_entities,
@@ -23,6 +24,12 @@ from .coverage import (
 )
 from .marketplace import MarketplaceDomainRegistry
 from .models import SearchResult
+from .page_classification import (
+    PageClassification,
+    PageType,
+    classify_page,
+    marketplace_page_classification,
+)
 
 
 _ROLE_PATTERNS = {
@@ -57,6 +64,65 @@ _DIRECT_DOMAIN_PATTERNS = {
 }
 
 _MAX_ENTITY_ROLE_DISTANCE = 160
+
+_PRODUCTION_PATTERNS = {
+    "production_capacity_evidence": re.compile(
+        r"\b(?:installed\s+|production\s+|annual\s+)*capacity\b.{0,100}"
+        r"\b\d[\d,.\s]*\s*(?:metric\s+)?(?:tonnes?|tons?|kt|mt)\s*"
+        r"(?:/|per\s+)(?:year|annum|a)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    "production_process_evidence": re.compile(
+        r"\b(?:sulfate|sulphate|chloride)\s+(?:process|route)\b|"
+        r"\b(?:wet|thermal)\s+(?:process|route)\b|"
+        r"\bprocesso\s+(?:de\s+)?(?:sulfato|cloreto|térmico|termico)\b|"
+        r"\bvia\s+úmida\b",
+        re.IGNORECASE,
+    ),
+    "own_plant_location_evidence": re.compile(
+        r"\b(?:our|own)\s+(?:production\s+|manufacturing\s+)?"
+        r"(?:plant|factory|facility)\b.{0,100}\b(?:located|based|in)\b|"
+        r"\b(?:production|manufacturing)\s+(?:plant|facility)\b.{0,100}"
+        r"\b(?:located|based|in)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    "factory_operating_years_evidence": re.compile(
+        r"\b\d{1,3}\+?\s+years?\s+(?:of\s+)?"
+        r"(?:manufacturing|factory|production)\b|"
+        r"\b(?:manufacturing|factory|production)\s+since\s+(?:19|20)\d{2}\b",
+        re.IGNORECASE,
+    ),
+}
+
+_CATALOG_FAMILY_PATTERNS = {
+    "acids": re.compile(r"\bacids?\b", re.IGNORECASE),
+    "cellulose_ethers": re.compile(r"\bcellulose\s+ethers?\b", re.IGNORECASE),
+    "detergents": re.compile(r"\bdetergents?\b", re.IGNORECASE),
+    "fertilizers": re.compile(r"\bfertili[sz]ers?\b", re.IGNORECASE),
+    "food_additives": re.compile(r"\bfood\s+additives?\b", re.IGNORECASE),
+    "pharmaceuticals": re.compile(r"\bpharmaceuticals?\b", re.IGNORECASE),
+    "pigments": re.compile(r"\bpigments?\b", re.IGNORECASE),
+    "plasticizers": re.compile(r"\bplastici[sz]ers?\b", re.IGNORECASE),
+    "polymers": re.compile(r"\bpolymers?\b", re.IGNORECASE),
+    "resins": re.compile(r"\bresins?\b", re.IGNORECASE),
+    "solvents": re.compile(r"\bsolvents?\b", re.IGNORECASE),
+    "water_treatment": re.compile(r"\bwater\s+treatment\b", re.IGNORECASE),
+}
+_CATALOG_MARKER = re.compile(
+    r"\b(?:catalog(?:ue)?|portfolio|products?|we\s+supply|"
+    r"our\s+material\s+can\s+be\s+used)\b",
+    re.IGNORECASE,
+)
+_THIRD_PARTY_BRAND_PATTERN = re.compile(r"\b(?:BILLIONS|LOMON)\b", re.IGNORECASE)
+_BRAND_SALE_PATTERN = re.compile(
+    r"\b(?:R-?996|price|buy|for\s+sale|wholesale)\b",
+    re.IGNORECASE,
+)
+_PRODUCTION_SUPPORTS = frozenset(_PRODUCTION_PATTERNS)
+_FORCED_TRADER_SUPPORTS = {
+    "broad_unrelated_catalog_evidence",
+    "third_party_brand_sale_evidence",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +173,7 @@ def _role_signals(
     result: SearchResult,
     matched_by: tuple[str, ...],
     extracted_content: str = "",
+    category: str = "",
 ) -> tuple[_RoleSignal, ...]:
     target_pattern = _target_pattern(entity.name)
     fragments = (
@@ -170,14 +237,139 @@ def _role_signals(
                 )
             )
 
+    primary_source = "domain" in matched_by and not entity.negative
+    for support, production_pattern in _PRODUCTION_PATTERNS.items():
+        best_production: tuple[int, str, str] | None = None
+        for source_type, text in fragments:
+            if not text:
+                continue
+            for production_match in production_pattern.finditer(text):
+                if primary_source:
+                    candidate = (
+                        0,
+                        source_type,
+                        _direct_excerpt(text, production_match),
+                    )
+                    if best_production is None:
+                        best_production = candidate
+                    continue
+                if target_pattern is None:
+                    continue
+                for target_match in target_pattern.finditer(text):
+                    distance = _distance(target_match, production_match)
+                    if distance > _MAX_ENTITY_ROLE_DISTANCE:
+                        continue
+                    candidate = (
+                        distance,
+                        source_type,
+                        _excerpt(text, target_match, production_match),
+                    )
+                    if best_production is None or distance < best_production[0]:
+                        best_production = candidate
+        if best_production is not None:
+            _, source_type, evidence_excerpt = best_production
+            signals.append(
+                _RoleSignal(
+                    supports=support,
+                    evidence=Evidence(
+                        source_url=result.url,
+                        source_type=source_type,
+                        document_name=result.title or UNKNOWN,
+                        page=NOT_APPLICABLE,
+                        evidence_excerpt=evidence_excerpt,
+                        retrieved_at=_retrieved_at(result.retrieved_at),
+                    ),
+                    primary_source=primary_source,
+                )
+            )
+
+    if primary_source:
+        catalog_text = "\n".join(
+            text
+            for source_type, text in fragments
+            if text and source_type != "EXTRACTED_CONTENT"
+        )
+        category_words = set(re.findall(r"[a-z]+", category.casefold()))
+        family_matches = {
+            family: pattern.search(catalog_text)
+            for family, pattern in _CATALOG_FAMILY_PATTERNS.items()
+            if family.rstrip("s") not in category_words
+        }
+        present_families = {
+            family: match for family, match in family_matches.items() if match is not None
+        }
+        if len(present_families) >= 3 and _CATALOG_MARKER.search(catalog_text):
+            first_match = min(
+                present_families.values(),
+                key=lambda match: match.start(),
+            )
+            signals.append(
+                _RoleSignal(
+                    supports="broad_unrelated_catalog_evidence",
+                    evidence=Evidence(
+                        source_url=result.url,
+                        source_type="COMBINED_PAGE_CONTENT",
+                        document_name=result.title or UNKNOWN,
+                        page=NOT_APPLICABLE,
+                        evidence_excerpt=_direct_excerpt(catalog_text, first_match),
+                        retrieved_at=_retrieved_at(result.retrieved_at),
+                    ),
+                    primary_source=True,
+                )
+            )
+
+        hostname_key = re.sub(
+            r"[^a-z0-9]+",
+            "",
+            (urlsplit(result.url).hostname or "").casefold(),
+        )
+        for source_type, text in fragments:
+            brand_matches = tuple(_THIRD_PARTY_BRAND_PATTERN.finditer(text))
+            sale_matches = tuple(_BRAND_SALE_PATTERN.finditer(text))
+            best_brand_sale: tuple[int, re.Match[str], re.Match[str]] | None = None
+            for brand_match in brand_matches:
+                brand_key = re.sub(
+                    r"[^a-z0-9]+",
+                    "",
+                    brand_match.group().casefold(),
+                )
+                if brand_key in hostname_key:
+                    continue
+                for sale_match in sale_matches:
+                    distance = _distance(brand_match, sale_match)
+                    if distance > _MAX_ENTITY_ROLE_DISTANCE:
+                        continue
+                    if best_brand_sale is None or distance < best_brand_sale[0]:
+                        best_brand_sale = (distance, brand_match, sale_match)
+            if best_brand_sale is not None:
+                _, brand_match, sale_match = best_brand_sale
+                signals.append(
+                    _RoleSignal(
+                        supports="third_party_brand_sale_evidence",
+                        evidence=Evidence(
+                            source_url=result.url,
+                            source_type=source_type,
+                            document_name=result.title or UNKNOWN,
+                            page=NOT_APPLICABLE,
+                            evidence_excerpt=_excerpt(text, brand_match, sale_match),
+                            retrieved_at=_retrieved_at(result.retrieved_at),
+                        ),
+                        primary_source=True,
+                    )
+                )
+                break
+
     return tuple(signals)
 
 
 def _verification(signals: Iterable[_RoleSignal]) -> CompanyVerification:
     items = tuple(signals)
-    manufacturing = any(
+    manufacturing_claim = any(
         item.supports == "explicit_manufacturing_evidence" for item in items
     )
+    positive_production = any(item.supports in _PRODUCTION_SUPPORTS for item in items)
+    forced_trader = any(item.supports in _FORCED_TRADER_SUPPORTS for item in items)
+    manufacturing = manufacturing_claim and positive_production and not forced_trader
     return CompanyVerification(
         explicit_manufacturing_evidence=manufacturing,
         primary_manufacturing_evidence=manufacturing
@@ -189,7 +381,8 @@ def _verification(signals: Iterable[_RoleSignal]) -> CompanyVerification:
         explicit_distribution_evidence=any(
             item.supports == "explicit_distribution_evidence" for item in items
         ),
-        explicit_trader_evidence=any(
+        explicit_trader_evidence=forced_trader
+        or any(
             item.supports == "explicit_trader_evidence" for item in items
         ),
         official_domain_verified=None,
@@ -261,16 +454,34 @@ def _classification_payload(
     control_id: str | None,
     matched_by: tuple[str, ...],
     signals: tuple[_RoleSignal, ...],
+    page_classification: PageClassification,
 ) -> dict[str, object]:
     classified = classify_company(_verification(signals))
+    supports = {signal.supports for signal in signals}
+    reason_codes = list(classified.reason_codes)
+    forced_reasons = []
+    if "third_party_brand_sale_evidence" in supports:
+        forced_reasons.append("THIRD_PARTY_BRAND_SALE_AUTOMATIC_TRADER")
+    if "broad_unrelated_catalog_evidence" in supports:
+        forced_reasons.append("BROAD_UNRELATED_CHEMICAL_CATALOG_AUTOMATIC_TRADER")
+    if forced_reasons:
+        reason_codes = forced_reasons
+    elif (
+        "explicit_manufacturing_evidence" in supports
+        and not supports.intersection(_PRODUCTION_SUPPORTS)
+        and classified.classification is CompanyClassification.UNKNOWN
+    ):
+        reason_codes = ["MANUFACTURER_POSITIVE_PRODUCTION_SIGNAL_REQUIRED"]
     return {
         "control_id": control_id,
         "target_entity": target_entity,
         "matched_by": list(matched_by),
         "role": _role(classified.classification),
         "detailed_classification": classified.classification.value,
-        "reason_codes": list(classified.reason_codes),
+        "reason_codes": reason_codes,
         "evidence": [_serialize_signal(signal) for signal in signals],
+        "page_type": page_classification.page_type.value,
+        "page_type_reason_codes": list(page_classification.reason_codes),
     }
 
 
@@ -279,6 +490,7 @@ def _marketplace_payload(
     target_entity: str,
     control_id: str | None,
     matched_by: tuple[str, ...],
+    page_classification: PageClassification,
 ) -> dict[str, object]:
     return {
         "control_id": control_id,
@@ -288,6 +500,30 @@ def _marketplace_payload(
         "detailed_classification": "MARKETPLACE",
         "reason_codes": ["MARKETPLACE_DOMAIN_HUMAN_CONFIG"],
         "evidence": [],
+        "page_type": page_classification.page_type.value,
+        "page_type_reason_codes": list(page_classification.reason_codes),
+    }
+
+
+def _non_company_payload(
+    *,
+    target_entity: str,
+    control_id: str | None,
+    matched_by: tuple[str, ...],
+    page_classification: PageClassification,
+) -> dict[str, object]:
+    return {
+        "control_id": control_id,
+        "target_entity": target_entity,
+        "matched_by": list(matched_by),
+        "role": "NOT_A_COMPANY",
+        "detailed_classification": "NOT_A_COMPANY",
+        "reason_codes": [
+            f"PAGE_TYPE_{page_classification.page_type.value}_NON_COMMERCIAL"
+        ],
+        "evidence": [],
+        "page_type": page_classification.page_type.value,
+        "page_type_reason_codes": list(page_classification.reason_codes),
     }
 
 
@@ -329,7 +565,11 @@ def _role_distribution(result_rows: list[dict[str, object]]) -> dict[str, object
         classification["role"] == "MARKETPLACE"
         for classification in classifications
     )
-    denominator = len(classifications) - marketplace_count
+    non_company_count = sum(
+        classification["role"] == "NOT_A_COMPANY"
+        for classification in classifications
+    )
+    denominator = len(classifications) - marketplace_count - non_company_count
     roles: dict[str, object] = {}
     levels = {
         "MANUFACTURER": (
@@ -416,6 +656,7 @@ def _role_distribution(result_rows: list[dict[str, object]]) -> dict[str, object
     return {
         "total_results": len(classifications),
         "marketplace_results": marketplace_count,
+        "non_company_results": non_company_count,
         "role_denominator": denominator,
         "roles": roles,
         "examples_by_non_unknown_role": examples,
@@ -497,11 +738,24 @@ def build_company_classification_report(
     for result in result_items:
         is_marketplace = marketplaces.matches_url(result.url)
         extracted = extracted_content.get(result.url, "")
+        page_classification = (
+            marketplace_page_classification(result)
+            if is_marketplace
+            else classify_page(result, extracted_content=extracted)
+        )
         if is_marketplace:
             domain_classification = _marketplace_payload(
                 target_entity=(urlsplit(result.url).hostname or UNKNOWN),
                 control_id=None,
                 matched_by=("domain",),
+                page_classification=page_classification,
+            )
+        elif page_classification.page_type is not PageType.COMPANY:
+            domain_classification = _non_company_payload(
+                target_entity=_domain_alias(result),
+                control_id=None,
+                matched_by=("domain",),
+                page_classification=page_classification,
             )
         else:
             domain_entity = BenchmarkEntity(
@@ -521,7 +775,9 @@ def build_company_classification_report(
                     result,
                     ("domain",),
                     extracted,
+                    category,
                 ),
+                page_classification=page_classification,
             )
 
         entity_rows: list[dict[str, object]] = []
@@ -536,9 +792,19 @@ def build_company_classification_report(
             signals = (
                 ()
                 if is_marketplace
-                else _role_signals(entity, result, matched_by, extracted)
+                or page_classification.page_type is not PageType.COMPANY
+                else _role_signals(
+                    entity,
+                    result,
+                    matched_by,
+                    extracted,
+                    category,
+                )
             )
-            if not is_marketplace:
+            if (
+                not is_marketplace
+                and page_classification.page_type is PageType.COMPANY
+            ):
                 signals_by_control[entity.control_id].extend(signals)
             matched_results_by_control[entity.control_id].add(_result_id(result))
             entity_rows.append(
@@ -547,26 +813,55 @@ def build_company_classification_report(
                         target_entity=entity.name,
                         control_id=entity.control_id,
                         matched_by=matched_by,
+                        page_classification=page_classification,
                     )
                     if is_marketplace
+                    else _non_company_payload(
+                        target_entity=entity.name,
+                        control_id=entity.control_id,
+                        matched_by=matched_by,
+                        page_classification=page_classification,
+                    )
+                    if page_classification.page_type is not PageType.COMPANY
                     else _classification_payload(
                         target_entity=entity.name,
                         control_id=entity.control_id,
                         matched_by=matched_by,
                         signals=signals,
+                        page_classification=page_classification,
                     )
                 )
             )
 
         if not entity_rows:
-            entity_rows.append(
-                _classification_payload(
-                    target_entity=UNKNOWN,
-                    control_id=None,
-                    matched_by=(),
-                    signals=(),
+            if is_marketplace:
+                entity_rows.append(
+                    _marketplace_payload(
+                        target_entity=UNKNOWN,
+                        control_id=None,
+                        matched_by=(),
+                        page_classification=page_classification,
+                    )
                 )
-            )
+            elif page_classification.page_type is not PageType.COMPANY:
+                entity_rows.append(
+                    _non_company_payload(
+                        target_entity=UNKNOWN,
+                        control_id=None,
+                        matched_by=(),
+                        page_classification=page_classification,
+                    )
+                )
+            else:
+                entity_rows.append(
+                    _classification_payload(
+                        target_entity=UNKNOWN,
+                        control_id=None,
+                        matched_by=(),
+                        signals=(),
+                        page_classification=page_classification,
+                    )
+                )
         if is_marketplace:
             expected_domain_role = "MARKETPLACE"
         elif len(expected_domain_roles) == 1:
@@ -587,6 +882,8 @@ def build_company_classification_report(
                 "query": result.query,
                 "sources_consulted": [result.url],
                 "extracted_content_available": bool(extracted),
+                "page_type": page_classification.page_type.value,
+                "page_type_reason_codes": list(page_classification.reason_codes),
                 "domain_classification": domain_classification,
                 "entity_classifications": entity_rows,
                 "expected_domain_role": expected_domain_role,
@@ -669,6 +966,10 @@ def build_company_classification_report(
         "results": result_rows,
         "role_distribution": _role_distribution(result_rows),
         "result_error_summary": _result_error_summary(result_rows),
+        "adjudicated_results_evaluation": evaluate_adjudicated_results(
+            category,
+            result_rows,
+        ),
         "ground_truth_comparison": {
             "summary": {
                 "hits": hits,

@@ -254,15 +254,15 @@ def test_offline_benchmark_classifies_results_and_compares_ground_truth() -> Non
     case_b = payload["cases"][1]["company_classification"]
     assert case_a["result_count"] == 150
     assert case_a["ground_truth_comparison"]["summary"] == {
-        "hits": 3,
-        "errors": 0,
+        "hits": 2,
+        "errors": 1,
         "not_found": 2,
         "evaluated": 3,
     }
     assert case_b["result_count"] == 119
     assert case_b["ground_truth_comparison"]["summary"] == {
-        "hits": 2,
-        "errors": 0,
+        "hits": 0,
+        "errors": 2,
         "not_found": 5,
         "evaluated": 2,
     }

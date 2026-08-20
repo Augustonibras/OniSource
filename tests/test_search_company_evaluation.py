@@ -36,7 +36,10 @@ def test_every_search_result_receives_an_evidence_aware_role() -> None:
         _result(
             "https://www.icl-group.com/phosphoric-acid",
             "Phosphoric Acid | ICL Group",
-            "ICL Group is a leading producer of phosphoric acid.",
+            (
+                "ICL Group is a leading producer of phosphoric acid and uses "
+                "the wet process for production."
+            ),
         ),
         _result(
             "https://unmatched.example/product",
@@ -69,7 +72,10 @@ def test_ground_truth_comparison_counts_hits_errors_and_missing_entities() -> No
             _result(
                 "https://www.icl-group.com/phosphoric-acid",
                 "Phosphoric Acid | ICL Group",
-                "ICL Group is a leading producer of phosphoric acid.",
+                (
+                    "ICL Group is a leading producer of phosphoric acid and "
+                    "uses the wet process for production."
+                ),
             ),
             _result(
                 "https://gjchemical.com/phosphoric-acid",
@@ -91,8 +97,8 @@ def test_ground_truth_comparison_counts_hits_errors_and_missing_entities() -> No
 
     comparison = report["ground_truth_comparison"]
     assert comparison["summary"] == {
-        "hits": 3,
-        "errors": 1,
+        "hits": 4,
+        "errors": 0,
         "not_found": 3,
         "evaluated": 4,
     }
@@ -100,7 +106,7 @@ def test_ground_truth_comparison_counts_hits_errors_and_missing_entities() -> No
     assert rows["icl_group"]["comparison"] == "HIT"
     assert rows["gj_chemical"]["classification"] == "DISTRIBUTOR"
     assert rows["zhengzhou_mahaco_industrial"]["classification"] == "TRADER"
-    assert rows["cobase_group"]["comparison"] == "ERROR"
+    assert rows["cobase_group"]["comparison"] == "HIT"
 
 
 def test_false_positive_count_covers_every_result_not_only_entity_summary() -> None:
@@ -110,12 +116,18 @@ def test_false_positive_count_covers_every_result_not_only_entity_summary() -> N
             _result(
                 "https://gjchemical.com/phosphoric-acid",
                 "GJ Chemical phosphoric acid manufacturer",
-                "GJ Chemical is a manufacturer of phosphoric acid.",
+                (
+                    "GJ Chemical is a manufacturer of phosphoric acid with "
+                    "installed capacity of 100,000 tonnes/year."
+                ),
             ),
             _result(
                 "https://unadjudicated.example/product",
                 "Unadjudicated manufacturer",
-                "Unadjudicated is a manufacturer of phosphoric acid.",
+                (
+                    "Unadjudicated is a manufacturer of phosphoric acid with "
+                    "a chloride process production route."
+                ),
             ),
         ],
     )
@@ -201,7 +213,10 @@ def test_negative_preserves_exact_granular_must_not_be_rule() -> None:
             _result(
                 "https://third-party.example/r6618",
                 "Qingdao Lidayouxuan R6618",
-                "Qingdao Lidayouxuan is described as a titanium dioxide manufacturer.",
+                (
+                    "Qingdao Lidayouxuan is described as a titanium dioxide "
+                    "manufacturer using the chloride process."
+                ),
             )
         ],
     )

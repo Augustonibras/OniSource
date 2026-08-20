@@ -223,7 +223,10 @@ def test_extracted_content_is_additional_company_evidence() -> None:
         "unconfigured_category",
         [search_result],
         extracted_content_by_url={
-            search_result.url: "Candidate is a manufacturer of industrial chemicals."
+            search_result.url: (
+                "Candidate is a manufacturer of industrial chemicals and uses "
+                "the chloride process for production."
+            )
         },
     )
 
