@@ -15,7 +15,7 @@ from .company_evaluation import build_company_classification_report
 from .models import SearchResult
 
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 MAX_CONTENT_CHARS = 40_000
 CONTENT_BUDGET_POLICY = "per_page_equal_quota_redistribute_v1"
 DEFAULT_LLM_CACHE_DIR = (
@@ -81,6 +81,11 @@ class CompanyClassifier(ABC):
         title: str,
         extracted_content: str,
         product_context: str,
+        *,
+        marketplace_signal: bool = False,
+        marketplace_signal_reason: str = "",
+        noise_signal: bool = False,
+        noise_signal_reason: str = "",
     ) -> ClassificationResult:
         """Classify one domain relative to the supplied product context."""
 
@@ -92,6 +97,10 @@ class DomainClassificationInput:
     extracted_content: str
     page_count: int
     source_urls: tuple[str, ...]
+    marketplace_signal: bool = False
+    marketplace_signal_reasons: tuple[str, ...] = ()
+    noise_signal: bool = False
+    noise_signal_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +138,8 @@ def group_extracted_pages_by_domain(
                 "title": result.title,
                 "contents": [],
                 "source_urls": [],
+                "marketplace_signal_reasons": [],
+                "noise_signal_reasons": [],
             }
         contents = grouped[domain]["contents"]
         source_urls = grouped[domain]["source_urls"]
@@ -136,17 +147,36 @@ def group_extracted_pages_by_domain(
             raise TypeError("domain aggregation state must contain lists")
         contents.append(extracted_content_by_url[result.url])
         source_urls.append(result.url)
+        marketplace_reasons = grouped[domain]["marketplace_signal_reasons"]
+        noise_reasons = grouped[domain]["noise_signal_reasons"]
+        if not isinstance(marketplace_reasons, list) or not isinstance(
+            noise_reasons, list
+        ):
+            raise TypeError("domain signal aggregation state must contain lists")
+        if (
+            result.marketplace_signal_reason
+            and result.marketplace_signal_reason not in marketplace_reasons
+        ):
+            marketplace_reasons.append(result.marketplace_signal_reason)
+        if result.noise_signal_reason and result.noise_signal_reason not in noise_reasons:
+            noise_reasons.append(result.noise_signal_reason)
 
     aggregated: list[DomainClassificationInput] = []
     for domain, values in grouped.items():
         contents = values["contents"]
         source_urls = values["source_urls"]
+        marketplace_reasons = values["marketplace_signal_reasons"]
+        noise_reasons = values["noise_signal_reasons"]
         title = values["title"]
         if (
             not isinstance(contents, list)
             or not all(isinstance(item, str) for item in contents)
             or not isinstance(source_urls, list)
             or not all(isinstance(item, str) for item in source_urls)
+            or not isinstance(marketplace_reasons, list)
+            or not all(isinstance(item, str) for item in marketplace_reasons)
+            or not isinstance(noise_reasons, list)
+            or not all(isinstance(item, str) for item in noise_reasons)
             or not isinstance(title, str)
         ):
             raise TypeError("domain aggregation state is malformed")
@@ -157,6 +187,10 @@ def group_extracted_pages_by_domain(
                 extracted_content=PAGE_BREAK.join(contents),
                 page_count=len(source_urls),
                 source_urls=tuple(source_urls),
+                marketplace_signal=bool(marketplace_reasons),
+                marketplace_signal_reasons=tuple(marketplace_reasons),
+                noise_signal=bool(noise_reasons),
+                noise_signal_reasons=tuple(noise_reasons),
             )
         )
     return tuple(aggregated)
@@ -174,6 +208,11 @@ def classify_with_citation_gate(
     title: str,
     extracted_content: str,
     product_context: str,
+    *,
+    marketplace_signal: bool = False,
+    marketplace_signal_reason: str = "",
+    noise_signal: bool = False,
+    noise_signal_reason: str = "",
 ) -> ClassificationResult:
     """Consume a result and apply the citation gate only when required."""
 
@@ -182,6 +221,10 @@ def classify_with_citation_gate(
         title,
         extracted_content,
         product_context,
+        marketplace_signal=marketplace_signal,
+        marketplace_signal_reason=marketplace_signal_reason,
+        noise_signal=noise_signal,
+        noise_signal_reason=noise_signal_reason,
     )
     if classifier.requires_citation and not result.citation.strip():
         return replace(
@@ -228,6 +271,11 @@ class RuleBasedCompanyClassifier(CompanyClassifier):
         title: str,
         extracted_content: str,
         product_context: str,
+        *,
+        marketplace_signal: bool = False,
+        marketplace_signal_reason: str = "",
+        noise_signal: bool = False,
+        noise_signal_reason: str = "",
     ) -> ClassificationResult:
         normalized_domain = normalize_classifier_domain(domain)
         result = SearchResult(
@@ -239,6 +287,10 @@ class RuleBasedCompanyClassifier(CompanyClassifier):
             provider="rule_based",
             query="rule_based_company_classification",
             retrieved_at="1970-01-01T00:00:00Z",
+            marketplace_signal=marketplace_signal,
+            marketplace_signal_reason=marketplace_signal_reason,
+            noise_signal=noise_signal,
+            noise_signal_reason=noise_signal_reason,
         )
         report = build_company_classification_report(
             product_context,
@@ -312,8 +364,14 @@ def _render_llm_company_classifier_prompt(
     title: str,
     budgeted_evidence: BudgetedEvidence,
     product_context: str,
+    marketplace_signal: bool,
+    marketplace_signal_reason: str,
+    noise_signal: bool,
+    noise_signal_reason: str,
 ) -> str:
     evidence_truncated = str(budgeted_evidence.evidence_truncated).lower()
+    marketplace_signal_text = str(marketplace_signal).lower()
+    noise_signal_text = str(noise_signal).lower()
     return f"""You classify the role of an entity relative to a specific product for an internal sourcing evidence system.
 
 Use only the supplied domain, page title, product context, and extracted page content. The classification must always be relative to product_context. Never infer a role from the domain name, site appearance, wording quality, or an unsupported claim. When evidence is missing, ambiguous, or contradictory, return UNKNOWN. A false MANUFACTURER classification is worse than a false negative.
@@ -338,6 +396,7 @@ Evidence rules:
 - [TRUNCATED] marks the end of a page whose remaining content was omitted by the deterministic per-page budget.
 - If no supporting excerpt exists in extracted_content, set role to UNKNOWN and citation to an empty string.
 - reasoning must be short and must not add facts absent from the supplied input.
+- marketplace_signal and noise_signal are human-configured retrieval hints. They are evidence inputs to consider, not automatic classifications.
 
 Return exactly one JSON object with no Markdown, commentary, or additional keys:
 {{"role":"UNKNOWN","confidence":"LOW","citation":"","reasoning":"short evidence-based reason"}}
@@ -354,6 +413,18 @@ product_context:
 evidence_truncated:
 {evidence_truncated}
 
+marketplace_signal:
+{marketplace_signal_text}
+
+marketplace_signal_reason:
+{marketplace_signal_reason}
+
+noise_signal:
+{noise_signal_text}
+
+noise_signal_reason:
+{noise_signal_reason}
+
 extracted_content:
 {budgeted_evidence.content}
 """
@@ -364,6 +435,11 @@ def build_llm_company_classifier_prompt(
     title: str,
     extracted_content: str,
     product_context: str,
+    *,
+    marketplace_signal: bool = False,
+    marketplace_signal_reason: str = "",
+    noise_signal: bool = False,
+    noise_signal_reason: str = "",
 ) -> str:
     normalized_domain = normalize_classifier_domain(domain)
     budgeted_evidence = budget_extracted_content(extracted_content)
@@ -372,6 +448,10 @@ def build_llm_company_classifier_prompt(
         title,
         budgeted_evidence,
         product_context,
+        marketplace_signal,
+        marketplace_signal_reason,
+        noise_signal,
+        noise_signal_reason,
     )
 
 
@@ -381,6 +461,10 @@ def _llm_cache_key_from_budgeted_evidence(
     budgeted_evidence: BudgetedEvidence,
     product_context: str,
     prompt_version: str,
+    marketplace_signal: bool,
+    marketplace_signal_reason: str,
+    noise_signal: bool,
+    noise_signal_reason: str,
 ) -> str:
     serialized = json.dumps(
         [
@@ -392,6 +476,10 @@ def _llm_cache_key_from_budgeted_evidence(
             prompt_version,
             MAX_CONTENT_CHARS,
             CONTENT_BUDGET_POLICY,
+            marketplace_signal,
+            marketplace_signal_reason,
+            noise_signal,
+            noise_signal_reason,
         ],
         ensure_ascii=False,
         separators=(",", ":"),
@@ -405,6 +493,11 @@ def llm_cache_key(
     extracted_content: str,
     product_context: str,
     prompt_version: str = PROMPT_VERSION,
+    *,
+    marketplace_signal: bool = False,
+    marketplace_signal_reason: str = "",
+    noise_signal: bool = False,
+    noise_signal_reason: str = "",
 ) -> str:
     normalized_domain = normalize_classifier_domain(domain)
     budgeted_evidence = budget_extracted_content(extracted_content)
@@ -414,6 +507,10 @@ def llm_cache_key(
         budgeted_evidence,
         product_context,
         prompt_version,
+        marketplace_signal,
+        marketplace_signal_reason,
+        noise_signal,
+        noise_signal_reason,
     )
 
 
@@ -513,6 +610,11 @@ class LLMCompanyClassifier(CompanyClassifier):
         title: str,
         extracted_content: str,
         product_context: str,
+        *,
+        marketplace_signal: bool = False,
+        marketplace_signal_reason: str = "",
+        noise_signal: bool = False,
+        noise_signal_reason: str = "",
     ) -> ClassificationResult:
         normalized_domain = normalize_classifier_domain(domain)
         budgeted_evidence = budget_extracted_content(extracted_content)
@@ -521,6 +623,10 @@ class LLMCompanyClassifier(CompanyClassifier):
             title,
             budgeted_evidence,
             product_context,
+            marketplace_signal,
+            marketplace_signal_reason,
+            noise_signal,
+            noise_signal_reason,
         )
         key = _llm_cache_key_from_budgeted_evidence(
             normalized_domain,
@@ -528,6 +634,10 @@ class LLMCompanyClassifier(CompanyClassifier):
             budgeted_evidence,
             product_context,
             self.prompt_version,
+            marketplace_signal,
+            marketplace_signal_reason,
+            noise_signal,
+            noise_signal_reason,
         )
         cached_response = read_llm_cache(self.cache_dir, key)
         if cached_response is not None:

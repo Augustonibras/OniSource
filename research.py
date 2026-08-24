@@ -17,6 +17,7 @@ from src.extract.cache import CachedExtractProvider
 from src.extract.cassette import (
     DEFAULT_EXTRACT_CASSETTE_DIR,
     CassetteExtractProvider,
+    ExtractCassetteNotFoundError,
 )
 from src.extract.models import ExtractResult
 from src.extract.provider import ExtractProvider
@@ -42,7 +43,11 @@ from src.search.company_classifier import (
 )
 from src.search.company_evaluation import build_company_classification_report
 from src.search.coverage import build_ground_truth_coverage
-from src.search.extraction_selection import select_extraction_urls
+from src.search.extraction_selection import (
+    MAX_EXTRACTIONS_PER_CASE,
+    attach_extraction_signals,
+    select_extraction_urls,
+)
 from src.search.models import SearchResult
 from src.search.provider import SearchProvider
 from src.search.query_builder import QUERY_SET_VERSION, build_search_queries
@@ -283,7 +288,7 @@ def _execute_queries(
     query_results: list[dict[str, object]] = []
     all_results: list[SearchResult] = []
     for query in queries:
-        results = provider.search(query)
+        results = attach_extraction_signals(provider.search(query))
         if after_query is not None:
             after_query(query, 10)
         all_results.extend(results)
@@ -338,13 +343,16 @@ def _extract_case_content(
     if provider is None:
         return {}, {
             "provider_mode": "NOT_AVAILABLE",
-            "url_limit": 40,
+            "url_limit": MAX_EXTRACTIONS_PER_CASE,
             "candidate_urls": len(selected_urls),
             "attempted_urls": 0,
             "successful_urls": 0,
             "failed_urls": 0,
             "batches": 0,
             "cache_hits": 0,
+            "missing_cassette_batches": 0,
+            "missing_cassette_urls": 0,
+            "missing_cassette_url_values": [],
             "credits_consumed": 0,
         }
 
@@ -352,8 +360,21 @@ def _extract_case_content(
     extracted: dict[str, str] = {}
     batches = _extract_batches(selected_urls)
     cache_hits = 0
+    missing_cassette_batches = 0
+    missing_cassette_urls = 0
+    missing_cassette_url_values: list[str] = []
+    attempted_url_values: list[str] = []
     for batch in batches:
-        batch_results: list[ExtractResult] = provider.extract(batch)
+        try:
+            batch_results: list[ExtractResult] = provider.extract(batch)
+        except ExtractCassetteNotFoundError:
+            if provider_mode != "cassette":
+                raise
+            missing_cassette_batches += 1
+            missing_cassette_urls += len(batch)
+            missing_cassette_url_values.extend(batch)
+            continue
+        attempted_url_values.extend(batch)
         if isinstance(provider, CachedExtractProvider):
             cache_hits += int(provider.last_cache_hit)
             if refresh_cassettes:
@@ -366,13 +387,16 @@ def _extract_case_content(
 
     return extracted, {
         "provider_mode": provider_mode,
-        "url_limit": 40,
+        "url_limit": MAX_EXTRACTIONS_PER_CASE,
         "candidate_urls": len(selected_urls),
-        "attempted_urls": len(selected_urls),
+        "attempted_urls": len(attempted_url_values),
         "successful_urls": len(extracted),
-        "failed_urls": len(selected_urls) - len(extracted),
+        "failed_urls": len(attempted_url_values) - len(extracted),
         "batches": len(batches),
         "cache_hits": cache_hits,
+        "missing_cassette_batches": missing_cassette_batches,
+        "missing_cassette_urls": missing_cassette_urls,
+        "missing_cassette_url_values": missing_cassette_url_values,
         "credits_consumed": (
             budget.execution_credits - credits_before if budget is not None else 0
         ),
@@ -713,7 +737,12 @@ def llm_classifier_dry_run_payload(
                 "absent_domain_diagnosis": diagnose_labeled_domain_coverage(
                     labeled_absent,
                     results,
-                    selected_urls,
+                    [
+                        url
+                        for url in selected_urls
+                        if url
+                        not in set(extraction["missing_cassette_url_values"])
+                    ],
                     extracted_content,
                 ),
             }
@@ -731,6 +760,12 @@ def llm_classifier_dry_run_payload(
                 domain_input.title,
                 domain_input.extracted_content,
                 case["product_context"],
+                marketplace_signal=domain_input.marketplace_signal,
+                marketplace_signal_reason="; ".join(
+                    domain_input.marketplace_signal_reasons
+                ),
+                noise_signal=domain_input.noise_signal,
+                noise_signal_reason="; ".join(domain_input.noise_signal_reasons),
             )
             if classification.evidence_truncated:
                 evidence_truncated_domains.append(domain_input.domain)
@@ -760,6 +795,12 @@ def llm_classifier_dry_run_payload(
                     "domain": item.domain,
                     "pages_merged": item.page_count,
                     "content_characters": len(item.extracted_content),
+                    "marketplace_signal": item.marketplace_signal,
+                    "marketplace_signal_reasons": list(
+                        item.marketplace_signal_reasons
+                    ),
+                    "noise_signal": item.noise_signal,
+                    "noise_signal_reasons": list(item.noise_signal_reasons),
                     "evidence_truncated": (
                         budget_extracted_content(
                             item.extracted_content

@@ -14,6 +14,10 @@ class SearchResult:
     provider: str
     query: str
     retrieved_at: str
+    marketplace_signal: bool = False
+    marketplace_signal_reason: str = ""
+    noise_signal: bool = False
+    noise_signal_reason: str = ""
 
     def __post_init__(self) -> None:
         if not self.url.strip():
@@ -22,6 +26,14 @@ class SearchResult:
             raise ValueError("SearchResult.provider is required")
         if not self.query.strip():
             raise ValueError("SearchResult.query is required")
+        if not isinstance(self.marketplace_signal, bool):
+            raise TypeError("SearchResult.marketplace_signal must be boolean")
+        if not isinstance(self.marketplace_signal_reason, str):
+            raise TypeError("SearchResult.marketplace_signal_reason must be text")
+        if not isinstance(self.noise_signal, bool):
+            raise TypeError("SearchResult.noise_signal must be boolean")
+        if not isinstance(self.noise_signal_reason, str):
+            raise TypeError("SearchResult.noise_signal_reason must be text")
 
         try:
             parsed = datetime.fromisoformat(self.retrieved_at.replace("Z", "+00:00"))

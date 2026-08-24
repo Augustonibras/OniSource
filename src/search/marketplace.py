@@ -53,13 +53,27 @@ class MarketplaceDomainRegistry:
         self.domains = load_marketplace_domains(config_path)
 
     def matches_domain(self, domain: str) -> bool:
+        return self.matching_pattern(domain) is not None
+
+    def matching_pattern(self, domain: str) -> str | None:
         normalized = domain.strip().casefold().rstrip(".")
-        return any(
-            normalized == marketplace
-            or normalized.endswith(f".{marketplace}")
-            for marketplace in self.domains
+        return next(
+            (
+                marketplace
+                for marketplace in self.domains
+                if normalized == marketplace
+                or normalized.endswith(f".{marketplace}")
+            ),
+            None,
         )
 
     def matches_url(self, url: str) -> bool:
         hostname = urlsplit(url).hostname
         return hostname is not None and self.matches_domain(hostname)
+
+    def match_reason(self, url: str) -> str | None:
+        hostname = urlsplit(url).hostname
+        if hostname is None:
+            return None
+        pattern = self.matching_pattern(hostname)
+        return None if pattern is None else f"MARKETPLACE_DOMAIN:{pattern}"

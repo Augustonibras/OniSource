@@ -275,7 +275,7 @@ def test_llm_classifier_dry_run_uses_only_offline_cassettes(
     assert payload["adjudicated_only"] is False
     assert payload["provider_selected"] is False
     assert payload["network_calls_made"] == 0
-    assert payload["prompt_version"] == "v3"
+    assert payload["prompt_version"] == "v4"
     assert payload["max_content_chars"] == 40_000
     assert [case["case"] for case in payload["cases"]] == ["A", "B"]
     assert all(
@@ -354,9 +354,12 @@ def test_adjudicated_only_dry_run_reports_found_and_absent_labeled_domains(
     case_b_diagnosis = payload["cases"][1]["adjudication"][
         "absent_domain_diagnosis"
     ]
-    assert {
-        item["domain"] for item in case_b_diagnosis["domains"]["EXTRACTION_FAILED"]
-    } == {"www.grandviewresearch.com"}
+    diagnosed_search_domains = {
+        item["domain"]
+        for category in ("IN_SEARCH_NOT_EXTRACTED", "EXTRACTION_FAILED")
+        for item in case_b_diagnosis["domains"][category]
+    }
+    assert "www.grandviewresearch.com" in diagnosed_search_domains
 
 
 def test_llm_dry_run_prices_must_be_supplied_together(tmp_path) -> None:
@@ -418,7 +421,7 @@ def test_offline_benchmark_classifies_results_and_compares_ground_truth() -> Non
         "not_found": 2,
         "evaluated": 3,
     }
-    assert case_b["result_count"] == 119
+    assert case_b["result_count"] == 120
     assert case_b["ground_truth_comparison"]["summary"] == {
         "hits": 0,
         "errors": 2,

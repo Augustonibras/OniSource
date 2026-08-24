@@ -78,16 +78,20 @@ class SearchDomainFilter:
         self.exclude_domains = load_noise_domains(noise_domains_path)
 
     def excludes_url(self, url: str) -> bool:
+        return self.match_reason(url) is not None
+
+    def match_reason(self, url: str) -> str | None:
         hostname = urlsplit(url).hostname
         if hostname is None:
-            return False
+            return None
         domain = hostname.casefold().rstrip(".")
-        if domain.endswith(_LOCAL_SUFFIX_EXCLUSIONS):
-            return True
-        return any(
-            domain == excluded or domain.endswith(f".{excluded}")
-            for excluded in self.exclude_domains
-        )
+        for suffix in _LOCAL_SUFFIX_EXCLUSIONS:
+            if domain.endswith(suffix):
+                return f"LOCAL_SUFFIX:{suffix}"
+        for excluded in self.exclude_domains:
+            if domain == excluded or domain.endswith(f".{excluded}"):
+                return f"EXCLUDE_DOMAIN:{excluded}"
+        return None
 
     def filter_raw_results(self, raw_results: list[Any]) -> list[Any]:
         filtered: list[Any] = []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,7 @@ class _UncitedLLMClassifier(CompanyClassifier):
         title: str,
         extracted_content: str,
         product_context: str,
+        **kwargs,
     ) -> ClassificationResult:
         return ClassificationResult(
             role=SupplierRole.MANUFACTURER,
@@ -157,6 +159,35 @@ def test_extracted_pages_are_grouped_once_per_domain_in_result_order() -> None:
     assert grouped_with_reversed_mapping == grouped
 
 
+def test_domain_grouping_preserves_marketplace_and_noise_signals() -> None:
+    marketplace_url = "https://www.alibaba.com/product"
+    noise_url = "https://agency.gov/document"
+    results = [
+        replace(
+            _search_result(marketplace_url, "Marketplace"),
+            marketplace_signal=True,
+            marketplace_signal_reason="MARKETPLACE_DOMAIN:alibaba.com",
+        ),
+        replace(
+            _search_result(noise_url, "Agency"),
+            noise_signal=True,
+            noise_signal_reason="LOCAL_SUFFIX:.gov",
+        ),
+    ]
+
+    grouped = group_extracted_pages_by_domain(
+        results,
+        {marketplace_url: "Marketplace page", noise_url: "Government page"},
+    )
+
+    assert grouped[0].marketplace_signal is True
+    assert grouped[0].marketplace_signal_reasons == (
+        "MARKETPLACE_DOMAIN:alibaba.com",
+    )
+    assert grouped[1].noise_signal is True
+    assert grouped[1].noise_signal_reasons == ("LOCAL_SUFFIX:.gov",)
+
+
 def test_per_page_budget_redistributes_unused_quota_in_successive_passes() -> None:
     first = "A" * 50_000
     second = "B" * 30_000
@@ -254,6 +285,35 @@ def test_cache_key_changes_with_product_context() -> None:
     second = llm_cache_key("example.com", "Example", "Content", "product B")
 
     assert first != second
+
+
+def test_cache_key_and_prompt_include_retrieval_signals() -> None:
+    baseline = llm_cache_key(
+        "example.com",
+        "Example",
+        "Content",
+        PRODUCT_CONTEXT,
+    )
+    signaled = llm_cache_key(
+        "example.com",
+        "Example",
+        "Content",
+        PRODUCT_CONTEXT,
+        marketplace_signal=True,
+        marketplace_signal_reason="MARKETPLACE_DOMAIN:example.com",
+    )
+    prompt = build_llm_company_classifier_prompt(
+        "example.com",
+        "Example",
+        "Content",
+        PRODUCT_CONTEXT,
+        marketplace_signal=True,
+        marketplace_signal_reason="MARKETPLACE_DOMAIN:example.com",
+    )
+
+    assert signaled != baseline
+    assert "marketplace_signal:\ntrue" in prompt
+    assert "MARKETPLACE_DOMAIN:example.com" in prompt
 
 
 def test_cache_key_and_prompt_use_only_truncated_content() -> None:
@@ -513,4 +573,4 @@ def test_prompt_uses_human_taxonomy_product_context_and_strict_json() -> None:
     assert "whitespace may be normalized" in prompt
     assert MAX_CONTENT_CHARS == 40_000
     assert CONTENT_BUDGET_POLICY == "per_page_equal_quota_redistribute_v1"
-    assert PROMPT_VERSION == "v3"
+    assert PROMPT_VERSION == "v4"

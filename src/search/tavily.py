@@ -285,8 +285,7 @@ class TavilySearchProvider(SearchProvider):
             raise MalformedResponseError("Tavily response.results must be a list")
 
         normalized: list[SearchResult] = []
-        filtered_results = self._domain_filter.filter_raw_results(raw_results)
-        for item in filtered_results[:max_results]:
+        for item in raw_results[:max_results]:
             if not isinstance(item, dict):
                 raise MalformedResponseError("Tavily result must be an object")
             try:

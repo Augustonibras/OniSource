@@ -5,7 +5,6 @@ from pathlib import Path
 
 from src.search.budget import (
     DEFAULT_CREDIT_STATE_PATH,
-    EXECUTION_CREDIT_LIMIT,
     MONTHLY_CREDIT_LIMIT,
     BudgetExceededError,
     SearchBudget,
@@ -13,6 +12,7 @@ from src.search.budget import (
 
 
 MAX_EXTRACT_URLS_PER_REQUEST = 20
+EXTRACT_EXECUTION_CREDIT_LIMIT = 80
 
 
 class ExtractBudget(SearchBudget):
@@ -45,9 +45,10 @@ class ExtractBudget(SearchBudget):
     def _ensure_credits_available(self, credits: int) -> tuple[str, int]:
         current_month = self._current_month()
         persisted_month, monthly_credits = self._load_monthly_state(current_month)
-        if self._execution_credits + credits > EXECUTION_CREDIT_LIMIT:
+        if self._execution_credits + credits > EXTRACT_EXECUTION_CREDIT_LIMIT:
             raise BudgetExceededError(
-                f"Execution credit limit of {EXECUTION_CREDIT_LIMIT} would be exceeded"
+                "Extraction execution credit limit of "
+                f"{EXTRACT_EXECUTION_CREDIT_LIMIT} would be exceeded"
             )
         if monthly_credits + credits > MONTHLY_CREDIT_LIMIT:
             raise BudgetExceededError(

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from src.extract.budget import ExtractBudget
+from src.extract.budget import EXTRACT_EXECUTION_CREDIT_LIMIT, ExtractBudget
 from src.search.budget import BudgetExceededError
 
 
@@ -35,3 +35,17 @@ def test_extract_budget_preflight_stops_before_network_limit(tmp_path) -> None:
 
     with pytest.raises(BudgetExceededError):
         budget.ensure_batch_available(20)
+
+
+def test_extract_budget_has_an_independent_eighty_credit_execution_cap(
+    tmp_path,
+) -> None:
+    budget = ExtractBudget(tmp_path / "credits.json")
+
+    for _ in range(20):
+        budget.record_extraction(20)
+
+    assert EXTRACT_EXECUTION_CREDIT_LIMIT == 80
+    assert budget.execution_credits == 80
+    with pytest.raises(BudgetExceededError, match="limit of 80"):
+        budget.ensure_batch_available(1)

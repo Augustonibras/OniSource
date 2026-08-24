@@ -72,10 +72,9 @@ class CassetteSearchProvider(SearchProvider):
                 f"Cassette response.results must be a list: {path}"
             )
 
-        filtered_results = self._domain_filter.filter_raw_results(raw_results)
         return [
             self._normalize_result(item, query, cassette["retrieved_at"], path)
-            for item in filtered_results[:max_results]
+            for item in raw_results[:max_results]
         ]
 
     def _validate_envelope(
