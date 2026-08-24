@@ -38,6 +38,7 @@ def test_gemini_provider_uses_approved_model_and_api_version() -> None:
         "https://generativelanguage.googleapis.com/v1beta/models/"
         "gemini-3.6-flash:generateContent"
     )
+    assert MAX_LLM_CALLS == 80
 
 
 def _gemini_response(model_text: str) -> dict[str, object]:

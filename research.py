@@ -37,6 +37,7 @@ from src.search.company_classifier import (
     PROMPT_VERSION,
     LLMCompanyClassifier,
     DomainClassificationInput,
+    RuleBasedCompanyClassifier,
     budget_extracted_content,
     group_extracted_pages_by_domain,
     llm_cache_key,
@@ -50,7 +51,18 @@ from src.search.extraction_selection import (
     attach_extraction_signals,
     select_extraction_urls,
 )
-from src.search.gemini import GEMINI_MODEL, GeminiLLMProvider
+from src.search.gemini import (
+    GEMINI_MODEL,
+    MAX_LLM_CALLS,
+    GeminiLLMProvider,
+    GeminiTransientError,
+    LLMCallGuard,
+    LLMCallLimitError,
+)
+from src.search.llm_benchmark import (
+    classification_metric_slices,
+    load_prompt_development_domains,
+)
 from src.search.models import SearchResult
 from src.search.provider import SearchProvider
 from src.search.query_builder import QUERY_SET_VERSION, build_search_queries
@@ -176,6 +188,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Call the approved Gemini provider for cache misses",
     )
     llm_smoke_parser.add_argument(
+        "--cache-dir",
+        default=str(DEFAULT_LLM_CACHE_DIR),
+        help="Read or write ignored LLM response cache files",
+    )
+    llm_benchmark_parser = subparsers.add_parser(
+        "llm-classifier-benchmark",
+        help="Evaluate all extracted human-labeled domains with the LLM classifier",
+    )
+    llm_benchmark_parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Call the approved Gemini provider for cache misses",
+    )
+    llm_benchmark_parser.add_argument(
         "--cache-dir",
         default=str(DEFAULT_LLM_CACHE_DIR),
         help="Read or write ignored LLM response cache files",
@@ -1026,7 +1052,7 @@ def llm_classifier_smoke_payload(
         else {
             "model": GEMINI_MODEL,
             "http_calls": 0,
-            "call_limit": 75,
+            "call_limit": MAX_LLM_CALLS,
             "retries": 0,
             "errors_by_type": {},
             "input_tokens": 0,
@@ -1053,6 +1079,329 @@ def llm_classifier_smoke_payload(
             "thoughts_tokens": cached_thoughts_tokens,
             "total_tokens": cached_total_tokens,
         },
+    }
+
+
+def _human_domain_metadata(category: str) -> dict[str, dict[str, object]]:
+    indexed: dict[str, dict[str, object]] = {}
+    for sample in (1, 2):
+        for item in load_adjudicated_results(category, sample=sample):
+            domain = normalize_classifier_domain(item.domain)
+            existing = indexed.get(domain)
+            if existing is None:
+                existing = {
+                    "human_label": item.human_label,
+                    "samples": set(),
+                }
+                indexed[domain] = existing
+            if existing["human_label"] != item.human_label:
+                raise ValueError(f"Conflicting human labels for domain {domain}")
+            samples = existing["samples"]
+            if not isinstance(samples, set):
+                raise TypeError("human domain samples must be a set")
+            samples.add(sample)
+    return indexed
+
+
+def llm_classifier_benchmark_plan() -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
+    """Build the reproducible 68-domain plan from offline cassettes."""
+
+    plan: list[dict[str, object]] = []
+    missing: list[dict[str, object]] = []
+    for case in PHASE_ZERO_CASES:
+        category = case["category"]
+        queries = build_search_queries(
+            case["product_name"],
+            category,
+            category_config=load_search_category_config(category),
+        )
+        _, results = _execute_queries(CassetteSearchProvider(), queries)
+        extracted_content, _ = _extract_case_content(
+            results,
+            CassetteExtractProvider(),
+            provider_mode="cassette",
+        )
+        domain_inputs = group_extracted_pages_by_domain(results, extracted_content)
+        indexed_inputs = {item.domain: item for item in domain_inputs}
+        metadata = _human_domain_metadata(category)
+        for domain_input in domain_inputs:
+            human = metadata.get(domain_input.domain)
+            if human is None:
+                continue
+            samples = human["samples"]
+            if not isinstance(samples, set):
+                raise TypeError("human domain samples must be a set")
+            plan.append(
+                {
+                    "case": case["case"],
+                    "category": category,
+                    "product_context": case["product_context"],
+                    "domain_input": domain_input,
+                    "human_label": human["human_label"],
+                    "samples": tuple(sorted(samples)),
+                }
+            )
+        for domain in sorted(set(metadata).difference(indexed_inputs)):
+            human = metadata[domain]
+            samples = human["samples"]
+            if not isinstance(samples, set):
+                raise TypeError("human domain samples must be a set")
+            missing.append(
+                {
+                    "case": case["case"],
+                    "category": category,
+                    "domain": domain,
+                    "human_label": human["human_label"],
+                    "samples": sorted(samples),
+                    "reason": "EXTRACTION_FAILED",
+                }
+            )
+    return plan, missing
+
+
+def _benchmark_cache_usage(
+    cached: object,
+    domain: str,
+) -> dict[str, object]:
+    if not isinstance(cached, Mapping):
+        raise ValueError(f"LLM benchmark cache is missing for {domain}")
+    usage = cached.get("usage_metadata")
+    if not isinstance(usage, Mapping):
+        raise ValueError(f"LLM benchmark token usage is missing for {domain}")
+    integer_fields = (
+        "input_tokens",
+        "output_tokens",
+        "thoughts_tokens",
+        "total_tokens",
+    )
+    values: dict[str, object] = {}
+    for field in integer_fields:
+        value = usage.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"LLM benchmark {field} is invalid for {domain}")
+        values[field] = value
+    finish_reason = usage.get("finish_reason")
+    if not isinstance(finish_reason, str):
+        raise ValueError(f"LLM benchmark finish_reason is invalid for {domain}")
+    values["finish_reason"] = finish_reason
+    return values
+
+
+def llm_classifier_benchmark_payload(
+    *,
+    live: bool = False,
+    cache_dir: str | Path = DEFAULT_LLM_CACHE_DIR,
+) -> dict[str, object]:
+    """Classify every measurable adjudicated domain, resuming from disk cache."""
+
+    plan, missing_extraction = llm_classifier_benchmark_plan()
+    prompt_development_domains = load_prompt_development_domains()
+    call_guard = LLMCallGuard(max_calls=MAX_LLM_CALLS)
+    provider = (
+        GeminiLLMProvider(call_guard=call_guard)
+        if live
+        else None
+    )
+    classifier = LLMCompanyClassifier(
+        provider,
+        cache_dir,
+        on_miss="live" if live else "raise",
+        model=GEMINI_MODEL,
+    )
+    rule_classifier = RuleBasedCompanyClassifier()
+    results: list[dict[str, object]] = []
+    fixed_rule_results: list[dict[str, object]] = []
+    token_totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "thoughts_tokens": 0,
+        "total_tokens": 0,
+    }
+    stop_reason: dict[str, object] | None = None
+
+    for item in plan:
+        domain_input = item["domain_input"]
+        if not isinstance(domain_input, DomainClassificationInput):
+            raise TypeError("LLM benchmark domain input is invalid")
+        product_context = item["product_context"]
+        if not isinstance(product_context, str):
+            raise TypeError("LLM benchmark product context is invalid")
+        marketplace_reason = "; ".join(
+            domain_input.marketplace_signal_reasons
+        )
+        noise_reason = "; ".join(domain_input.noise_signal_reasons)
+        try:
+            result = classifier.classify(
+                domain_input.domain,
+                domain_input.title,
+                domain_input.extracted_content,
+                product_context,
+                marketplace_signal=domain_input.marketplace_signal,
+                marketplace_signal_reason=marketplace_reason,
+                noise_signal=domain_input.noise_signal,
+                noise_signal_reason=noise_reason,
+            )
+        except GeminiTransientError as error:
+            if error.status_code != 429:
+                raise
+            stop_reason = {
+                "type": "RATE_LIMIT",
+                "status_code": error.status_code,
+                "response_body": error.response_body,
+            }
+            break
+        except LLMCallLimitError as error:
+            stop_reason = {
+                "type": "CALL_LIMIT",
+                "message": str(error),
+            }
+            break
+        except NotImplementedError:
+            if live:
+                raise
+            stop_reason = {
+                "type": "CACHE_MISS",
+                "domain": domain_input.domain,
+            }
+            break
+
+        key = llm_cache_key(
+            domain_input.domain,
+            domain_input.title,
+            domain_input.extracted_content,
+            product_context,
+            model=GEMINI_MODEL,
+            marketplace_signal=domain_input.marketplace_signal,
+            marketplace_signal_reason=marketplace_reason,
+            noise_signal=domain_input.noise_signal,
+            noise_signal_reason=noise_reason,
+        )
+        usage = _benchmark_cache_usage(read_llm_cache(cache_dir, key), domain_input.domain)
+        for field in token_totals:
+            value = usage[field]
+            if not isinstance(value, int):
+                raise TypeError("LLM benchmark token total must be integer")
+            token_totals[field] += value
+
+        human_label = item["human_label"]
+        samples = item["samples"]
+        if not isinstance(human_label, str) or not isinstance(samples, tuple):
+            raise TypeError("LLM benchmark human metadata is invalid")
+        result_row = {
+            "case": item["case"],
+            "category": item["category"],
+            "domain": domain_input.domain,
+            "samples": samples,
+            "human_label": human_label,
+            "predicted_role": result.role.value,
+            "confidence": result.confidence.value,
+            "citation": result.citation,
+            "reasoning": result.reasoning,
+            "finishReason": usage["finish_reason"],
+            "evidence_truncated": result.evidence_truncated,
+            "correct": result.role.value == human_label,
+            "token_usage": usage,
+        }
+        results.append(result_row)
+
+        fixed_result = rule_classifier.classify(
+            domain_input.domain,
+            domain_input.title,
+            domain_input.extracted_content,
+            product_context,
+            marketplace_signal=domain_input.marketplace_signal,
+            marketplace_signal_reason=marketplace_reason,
+            noise_signal=domain_input.noise_signal,
+            noise_signal_reason=noise_reason,
+        )
+        fixed_rule_results.append(
+            {
+                "case": item["case"],
+                "category": item["category"],
+                "domain": domain_input.domain,
+                "samples": samples,
+                "human_label": human_label,
+                "predicted_role": fixed_result.role.value,
+                "correct": fixed_result.role.value == human_label,
+            }
+        )
+
+    remaining_items = plan[len(results) :]
+    remaining_domains = []
+    for item in remaining_items:
+        domain_input = item["domain_input"]
+        if not isinstance(domain_input, DomainClassificationInput):
+            raise TypeError("LLM benchmark remaining domain input is invalid")
+        remaining_domains.append(domain_input.domain)
+    llm_metrics = classification_metric_slices(
+        results,
+        prompt_development_domains,
+    )
+    fixed_rule_metrics = classification_metric_slices(
+        fixed_rule_results,
+        prompt_development_domains,
+    )
+    errors = [
+        {
+            "domain": row["domain"],
+            "predicted_role": row["predicted_role"],
+            "human_label": row["human_label"],
+            "citation": row["citation"],
+        }
+        for row in results
+        if not row["correct"]
+    ]
+    provider_usage = (
+        provider.execution_metrics
+        if provider is not None
+        else {
+            "model": GEMINI_MODEL,
+            "http_calls": 0,
+            "call_limit": MAX_LLM_CALLS,
+            "retries": 0,
+            "errors_by_type": {},
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "thoughts_tokens": 0,
+            "total_tokens": 0,
+        }
+    )
+    return {
+        "status": "COMPLETE" if not remaining_domains else "PARTIAL",
+        "mode": "live" if live else "offline_cache",
+        "model": GEMINI_MODEL,
+        "prompt_version": PROMPT_VERSION,
+        "call_limit": MAX_LLM_CALLS,
+        "adjudicated_unique_domains": len(plan) + len(missing_extraction),
+        "measurable_domains": len(plan),
+        "completed_domains": len(results),
+        "remaining_domain_count": len(remaining_domains),
+        "remaining_domains": remaining_domains,
+        "missing_extraction": missing_extraction,
+        "stop_reason": stop_reason,
+        "prompt_development_domains": sorted(prompt_development_domains),
+        "llm_metrics": llm_metrics,
+        "fixed_rule_metrics": fixed_rule_metrics,
+        "direct_comparison": {
+            "same_domain_count": len(results),
+            "llm_correct": sum(bool(row["correct"]) for row in results),
+            "fixed_rule_correct": sum(
+                bool(row["correct"]) for row in fixed_rule_results
+            ),
+        },
+        "failure_counts": classifier.execution_metrics["failure_counts"],
+        "correct_with_evidence_truncated": sum(
+            bool(row["correct"]) and bool(row["evidence_truncated"])
+            for row in results
+        ),
+        "actual_token_totals": token_totals,
+        "provider_usage_this_execution": provider_usage,
+        "errors": errors,
+        "results": results,
+        "fixed_rule_results": fixed_rule_results,
     }
 
 
@@ -1102,6 +1451,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "llm-classifier-smoke":
         payload = llm_classifier_smoke_payload(
+            live=args.live,
+            cache_dir=args.cache_dir,
+        )
+    elif args.command == "llm-classifier-benchmark":
+        payload = llm_classifier_benchmark_payload(
             live=args.live,
             cache_dir=args.cache_dir,
         )

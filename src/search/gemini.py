@@ -18,7 +18,7 @@ GEMINI_API_URL = (
     f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/"
     f"{GEMINI_MODEL}:generateContent"
 )
-MAX_LLM_CALLS = 75
+MAX_LLM_CALLS = 80
 MAX_GEMINI_ATTEMPTS = 3
 
 

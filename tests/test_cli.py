@@ -8,6 +8,7 @@ from research import (
     benchmark_payload,
     build_parser,
     dry_run_search_payload,
+    llm_classifier_benchmark_plan,
     llm_classifier_dry_run_payload,
     load_category,
     status_payload,
@@ -261,6 +262,29 @@ def test_llm_classifier_smoke_requires_an_explicit_live_flag() -> None:
 
     assert offline.live is False
     assert live.live is True
+
+
+def test_llm_classifier_benchmark_requires_an_explicit_live_flag() -> None:
+    parser = build_parser()
+
+    offline = parser.parse_args(["llm-classifier-benchmark"])
+    live = parser.parse_args(["llm-classifier-benchmark", "--live"])
+
+    assert offline.live is False
+    assert live.live is True
+
+
+def test_llm_classifier_benchmark_plan_has_68_measurable_domains() -> None:
+    plan, missing = llm_classifier_benchmark_plan()
+
+    assert len(plan) == 68
+    assert len({item["domain_input"].domain for item in plan}) == 68
+    assert {item["domain"] for item in missing} == {
+        "www.industryresearch.biz",
+        "htmcgroup.com",
+        "www.grandviewresearch.com",
+    }
+    assert all(item["reason"] == "EXTRACTION_FAILED" for item in missing)
 
 
 def test_llm_classifier_dry_run_uses_only_offline_cassettes(
