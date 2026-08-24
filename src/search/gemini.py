@@ -27,11 +27,29 @@ class GeminiAPIKeyMissingError(GeminiProviderError):
     """Raised before a request when GEMINI_API_KEY is unavailable."""
 
 
-class GeminiAuthError(GeminiProviderError):
+class GeminiHTTPError(GeminiProviderError):
+    """Raised for HTTP failures with a sanitized response body."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int,
+        response_body: str,
+        api_key: str,
+    ) -> None:
+        sanitized_message = message.replace(api_key, "***")
+        sanitized_body = response_body.replace(api_key, "***")
+        self.status_code = status_code
+        self.response_body = sanitized_body
+        super().__init__(f"{sanitized_message}\nResponse body: {sanitized_body}")
+
+
+class GeminiAuthError(GeminiHTTPError):
     """Raised immediately for Gemini authentication failures."""
 
 
-class GeminiTransientError(GeminiProviderError):
+class GeminiTransientError(GeminiHTTPError):
     """Raised after all transient-response attempts are exhausted."""
 
 
@@ -41,10 +59,6 @@ class GeminiTimeoutError(GeminiProviderError):
 
 class GeminiTransportError(GeminiProviderError):
     """Raised for non-timeout transport failures."""
-
-
-class GeminiHTTPError(GeminiProviderError):
-    """Raised for non-transient, non-authentication HTTP failures."""
 
 
 class GeminiMalformedResponseError(GeminiProviderError, ValueError):
@@ -150,14 +164,21 @@ class GeminiLLMProvider(LLMProvider):
             if response.status_code in {401, 403}:
                 self._record_error(GeminiAuthError)
                 raise GeminiAuthError(
-                    f"Gemini authentication failed with HTTP {response.status_code}"
+                    f"Gemini authentication failed with HTTP {response.status_code}",
+                    status_code=response.status_code,
+                    response_body=response.text,
+                    api_key=self._api_key,
                 )
             if response.status_code == 429 or 500 <= response.status_code <= 599:
                 self._record_error(GeminiTransientError)
                 if attempt == MAX_GEMINI_ATTEMPTS:
                     raise GeminiTransientError(
                         "Gemini transient failure persisted after "
-                        f"{MAX_GEMINI_ATTEMPTS} attempts"
+                        f"{MAX_GEMINI_ATTEMPTS} attempts with HTTP "
+                        f"{response.status_code}",
+                        status_code=response.status_code,
+                        response_body=response.text,
+                        api_key=self._api_key,
                     )
                 self._retries += 1
                 self._sleep(self._backoff_seconds * (2 ** (attempt - 1)))
@@ -165,7 +186,10 @@ class GeminiLLMProvider(LLMProvider):
             if not 200 <= response.status_code < 300:
                 self._record_error(GeminiHTTPError)
                 raise GeminiHTTPError(
-                    f"Gemini returned unexpected HTTP status {response.status_code}"
+                    f"Gemini returned unexpected HTTP status {response.status_code}",
+                    status_code=response.status_code,
+                    response_body=response.text,
+                    api_key=self._api_key,
                 )
             try:
                 raw_response = response.json()
@@ -181,7 +205,7 @@ class GeminiLLMProvider(LLMProvider):
                 )
             return raw_response
 
-        raise GeminiTransientError("Gemini attempts were exhausted")
+        raise AssertionError("Gemini attempt loop exited unexpectedly")
 
     def parse_response(self, raw_response: object) -> tuple[object, LLMTokenUsage]:
         if not isinstance(raw_response, Mapping):

@@ -17,7 +17,9 @@ from src.search.gemini import (
     MAX_LLM_CALLS,
     GeminiAPIKeyMissingError,
     GeminiAuthError,
+    GeminiHTTPError,
     GeminiLLMProvider,
+    GeminiTransientError,
     LLMCallGuard,
     LLMCallLimitError,
 )
@@ -47,9 +49,16 @@ def _gemini_response(model_text: str) -> dict[str, object]:
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, payload: object) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        payload: object,
+        *,
+        text: str | None = None,
+    ) -> None:
         self.status_code = status_code
         self.payload = payload
+        self.text = json.dumps(payload) if text is None else text
 
     def json(self) -> object:
         return self.payload
@@ -123,18 +132,68 @@ def test_gemini_provider_retries_transient_errors_and_reports_real_tokens() -> N
 
 
 def test_gemini_provider_aborts_authentication_failure_without_retry() -> None:
-    session = _FakeSession([_FakeResponse(403, {})])
+    api_key = "test-secret"
+    session = _FakeSession(
+        [_FakeResponse(403, {}, text=f"auth rejected for {api_key}")]
+    )
     provider = GeminiLLMProvider(
-        env={"GEMINI_API_KEY": "test-secret"},
+        env={"GEMINI_API_KEY": api_key},
         session=session,
         sleep=lambda _: pytest.fail("authentication failures must not retry"),
     )
 
-    with pytest.raises(GeminiAuthError, match="HTTP 403"):
+    with pytest.raises(GeminiAuthError, match="HTTP 403") as captured:
         provider.complete("prompt")
 
+    assert captured.value.status_code == 403
+    assert captured.value.response_body == "auth rejected for ***"
+    assert api_key not in str(captured.value)
     assert len(session.calls) == 1
     assert provider.execution_metrics["retries"] == 0
+
+
+def test_gemini_provider_preserves_sanitized_generic_http_error_body() -> None:
+    api_key = "test-secret"
+    response_body = f'{{"error": "model missing", "key": "{api_key}"}}'
+    session = _FakeSession([_FakeResponse(404, {}, text=response_body)])
+    provider = GeminiLLMProvider(
+        env={"GEMINI_API_KEY": api_key},
+        session=session,
+    )
+
+    with pytest.raises(GeminiHTTPError) as captured:
+        provider.complete("prompt")
+
+    assert captured.value.status_code == 404
+    assert captured.value.response_body == (
+        '{"error": "model missing", "key": "***"}'
+    )
+    assert captured.value.response_body in str(captured.value)
+    assert api_key not in str(captured.value)
+
+
+def test_gemini_provider_preserves_sanitized_final_5xx_error_body() -> None:
+    api_key = "test-secret"
+    response_body = f"upstream failure for {api_key}"
+    session = _FakeSession(
+        [
+            _FakeResponse(503, {}, text=response_body),
+            _FakeResponse(503, {}, text=response_body),
+            _FakeResponse(503, {}, text=response_body),
+        ]
+    )
+    provider = GeminiLLMProvider(
+        env={"GEMINI_API_KEY": api_key},
+        session=session,
+        backoff_seconds=0,
+    )
+
+    with pytest.raises(GeminiTransientError) as captured:
+        provider.complete("prompt")
+
+    assert captured.value.status_code == 503
+    assert captured.value.response_body == "upstream failure for ***"
+    assert api_key not in str(captured.value)
 
 
 def test_gemini_provider_aborts_before_request_when_call_cap_is_exhausted() -> None:
