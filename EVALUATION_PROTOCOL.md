@@ -212,3 +212,26 @@ Regra final:
 | FAIL | FAIL | FAIL |
 
 Nenhuma média, score agregado ou desempenho de apenas um caso pode substituir essa regra.
+
+## Fase 0 — Veredito da classificação por regra fixa: FAIL
+
+**Data do veredito:** 2026-08-24
+**Commits de referência:** `4106bd1` (amostra 1) e `3c6936c` (conjunto 2 de validação).
+
+O conjunto 2 é um conjunto de validação humana e não foi usado para escrever as regras. Os números medidos exclusivamente nesse conjunto foram:
+
+| Escopo | Papel | Precisão | Revocação |
+|---|---|---:|---:|
+| Caso A | `MANUFACTURER` | 0/1 — 0,00% | 0/1 — 0,00% |
+| Caso A | `DISTRIBUTOR` | 1/1 — 100,00% | 1/3 — 33,33% |
+| Caso A | `TRADER` | 8/15 — 53,33% | 8/11 — 72,73% |
+| Caso B | `MANUFACTURER` | 0/1 — 0,00% | 0/1 — 0,00% |
+| Caso B | `DISTRIBUTOR` | 1/1 — 100,00% | 1/4 — 25,00% |
+| Caso B | `TRADER` | 4/9 — 44,44% | 4/5 — 80,00% |
+| Combinado | `MANUFACTURER` | 0/2 — 0,00% | 0/2 — 0,00% |
+| Combinado | `DISTRIBUTOR` | 2/2 — 100,00% | 2/7 — 28,57% |
+| Combinado | `TRADER` | 12/24 — 50,00% | 12/16 — 75,00% |
+
+**Motivo do FAIL:** sinais como “catálogo amplo” e “venda de marca de terceiro” não separam fabricante de revendedor asiático que se autodeclara fabricante, e rebaixaram fabricantes reais como ICL Group, hxtio2 e mytio2. As regras de tipo de página também não distinguem de forma confiável site de empresa de portal de dados, notícia ou associação.
+
+**Decisão:** substituir o classificador por `LLMCompanyClassifier`, atrás de uma abstração `CompanyClassifier`. A implementação por regra fixa será preservada apenas para comparação.
