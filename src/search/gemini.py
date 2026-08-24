@@ -13,7 +13,7 @@ from .company_classifier import LLMProvider, LLMTokenUsage
 # Gemini 2.5 is still listed but retired for new projects; Pro requires billing.
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_API_VERSION = "v1beta"
-GEMINI_MAX_OUTPUT_TOKENS = 2048
+GEMINI_MAX_OUTPUT_TOKENS = 512
 GEMINI_API_URL = (
     f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/"
     f"{GEMINI_MODEL}:generateContent"
