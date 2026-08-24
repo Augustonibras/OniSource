@@ -27,7 +27,8 @@ LLM_FAILURE_REASONS = (
     "INVALID_RESPONSE",
 )
 _CACHE_FIELDS = {"role", "confidence", "citation", "reasoning"}
-_ON_MISS_MODES = {"raise", "dry_run"}
+_ON_MISS_MODES = {"raise", "dry_run", "live"}
+_PROVIDER_CACHE_FORMAT = "raw_llm_provider_response_v1"
 _INVALID_CACHED_RESPONSE = object()
 PAGE_BREAK = "\n--- PAGE BREAK ---\n"
 TRUNCATED_MARKER = "[TRUNCATED]"
@@ -108,6 +109,26 @@ class BudgetedEvidence:
     content: str
     evidence_truncated: bool
     page_allocations: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LLMTokenUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+    def __post_init__(self) -> None:
+        for field_value in (
+            self.input_tokens,
+            self.output_tokens,
+            self.total_tokens,
+        ):
+            if (
+                isinstance(field_value, bool)
+                or not isinstance(field_value, int)
+                or field_value < 0
+            ):
+                raise ValueError("LLM token usage must contain non-negative integers")
 
 
 def normalize_classifier_domain(value: str) -> str:
@@ -197,9 +218,20 @@ def group_extracted_pages_by_domain(
 
 
 class LLMProvider(ABC):
+    provider_name = "unconfigured_llm"
+
     @abstractmethod
-    def complete(self, prompt: str) -> str:
-        """Return a provider response. No implementation is selected in Phase 0."""
+    def complete(self, prompt: str) -> object:
+        """Return the raw provider response without interpreting model output."""
+
+    def parse_response(self, raw_response: object) -> tuple[object, LLMTokenUsage]:
+        """Normalize model output after the caller has persisted the raw response."""
+
+        return raw_response, LLMTokenUsage()
+
+    @property
+    def execution_metrics(self) -> dict[str, object]:
+        return {}
 
 
 def classify_with_citation_gate(
@@ -571,8 +603,28 @@ def _normalized_whitespace(value: str) -> str:
     return " ".join(value.split())
 
 
+def _provider_cache_envelope(
+    provider: LLMProvider,
+    raw_response: object,
+) -> dict[str, object]:
+    return {
+        "format": _PROVIDER_CACHE_FORMAT,
+        "provider": provider.provider_name,
+        "prompt_version": PROMPT_VERSION,
+        "raw_response": raw_response,
+    }
+
+
+def _cached_model_response(cached_response: object) -> object:
+    if not isinstance(cached_response, Mapping):
+        return cached_response
+    if cached_response.get("format") != _PROVIDER_CACHE_FORMAT:
+        return cached_response
+    return cached_response.get("model_response", _INVALID_CACHED_RESPONSE)
+
+
 class LLMCompanyClassifier(CompanyClassifier):
-    """Cache-only LLM classifier skeleton; live provider calls are disabled."""
+    """Evidence classifier with explicit cache-only, dry-run and live modes."""
 
     requires_citation = True
     prompt_version = PROMPT_VERSION
@@ -585,7 +637,7 @@ class LLMCompanyClassifier(CompanyClassifier):
         on_miss: str = "raise",
     ) -> None:
         if on_miss not in _ON_MISS_MODES:
-            raise ValueError("on_miss must be 'raise' or 'dry_run'")
+            raise ValueError("on_miss must be 'raise', 'dry_run' or 'live'")
         self.provider = provider
         self.cache_dir = Path(cache_dir)
         self.on_miss = on_miss
@@ -596,13 +648,16 @@ class LLMCompanyClassifier(CompanyClassifier):
 
     @property
     def execution_metrics(self) -> dict[str, object]:
-        return {
+        metrics: dict[str, object] = {
             "provider_calls_planned": self._planned_calls,
             "total_prompt_characters": self._total_prompt_characters,
             "estimated_input_tokens": self._total_prompt_characters / 4,
             "token_estimation_method": "characters / 4",
             "failure_counts": dict(self._failure_counts),
         }
+        if self.provider is not None and self.provider.execution_metrics:
+            metrics["provider_usage"] = self.provider.execution_metrics
+        return metrics
 
     def classify(
         self,
@@ -642,22 +697,48 @@ class LLMCompanyClassifier(CompanyClassifier):
         cached_response = read_llm_cache(self.cache_dir, key)
         if cached_response is not None:
             return self._parse_response(
-                cached_response,
+                _cached_model_response(cached_response),
                 extracted_content=budgeted_evidence.content,
                 evidence_truncated=budgeted_evidence.evidence_truncated,
             )
         if self.on_miss == "raise":
             raise NotImplementedError("LLM provider not configured")
-        if key not in self._planned_keys:
+        if self.on_miss == "dry_run" and key not in self._planned_keys:
             self._planned_keys.add(key)
             write_pending_prompt(self.cache_dir, key, prompt)
             self._planned_calls += 1
             self._total_prompt_characters += len(prompt)
-        return ClassificationResult(
-            role=SupplierRole.UNKNOWN,
-            confidence=Confidence.LOW,
-            citation="",
-            reasoning="CACHE_MISS_DRY_RUN",
+        if self.on_miss == "dry_run":
+            return ClassificationResult(
+                role=SupplierRole.UNKNOWN,
+                confidence=Confidence.LOW,
+                citation="",
+                reasoning="CACHE_MISS_DRY_RUN",
+                evidence_truncated=budgeted_evidence.evidence_truncated,
+            )
+
+        if self.provider is None:
+            raise NotImplementedError("LLM provider not configured")
+        raw_response = self.provider.complete(prompt)
+        cache_envelope = _provider_cache_envelope(self.provider, raw_response)
+        write_llm_cache(self.cache_dir, key, cache_envelope)
+        try:
+            model_response, token_usage = self.provider.parse_response(raw_response)
+        except (TypeError, ValueError):
+            return self._failure_result(
+                "INVALID_RESPONSE",
+                evidence_truncated=budgeted_evidence.evidence_truncated,
+            )
+        cache_envelope["model_response"] = model_response
+        cache_envelope["usage_metadata"] = {
+            "input_tokens": token_usage.input_tokens,
+            "output_tokens": token_usage.output_tokens,
+            "total_tokens": token_usage.total_tokens,
+        }
+        write_llm_cache(self.cache_dir, key, cache_envelope)
+        return self._parse_response(
+            model_response,
+            extracted_content=budgeted_evidence.content,
             evidence_truncated=budgeted_evidence.evidence_truncated,
         )
 

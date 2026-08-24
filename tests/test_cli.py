@@ -253,6 +253,16 @@ def test_llm_classifier_dry_run_has_a_dedicated_command() -> None:
     assert unpriced.output_price_per_mtok is None
 
 
+def test_llm_classifier_smoke_requires_an_explicit_live_flag() -> None:
+    parser = build_parser()
+
+    offline = parser.parse_args(["llm-classifier-smoke"])
+    live = parser.parse_args(["llm-classifier-smoke", "--live"])
+
+    assert offline.live is False
+    assert live.live is True
+
+
 def test_llm_classifier_dry_run_uses_only_offline_cassettes(
     tmp_path,
     monkeypatch,

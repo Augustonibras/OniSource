@@ -8,7 +8,7 @@ import sys
 from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 from src.extract.audit import freeze_extract_cache_as_cassette
@@ -39,7 +39,9 @@ from src.search.company_classifier import (
     DomainClassificationInput,
     budget_extracted_content,
     group_extracted_pages_by_domain,
+    llm_cache_key,
     normalize_classifier_domain,
+    read_llm_cache,
 )
 from src.search.company_evaluation import build_company_classification_report
 from src.search.coverage import build_ground_truth_coverage
@@ -48,6 +50,7 @@ from src.search.extraction_selection import (
     attach_extraction_signals,
     select_extraction_urls,
 )
+from src.search.gemini import GeminiLLMProvider
 from src.search.models import SearchResult
 from src.search.provider import SearchProvider
 from src.search.query_builder import QUERY_SET_VERSION, build_search_queries
@@ -75,6 +78,12 @@ PHASE_ZERO_CASES = (
     },
 )
 ESTIMATED_OUTPUT_TOKENS_PER_CALL = 150
+LLM_SMOKE_LABEL_QUOTAS = {
+    "MANUFACTURER": 2,
+    "TRADER": 1,
+    "MARKETPLACE_OR_DIRECTORY": 1,
+    "NOT_A_COMPANY": 1,
+}
 
 
 def load_category(name: str) -> dict[str, Any]:
@@ -157,6 +166,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     llm_dry_run_parser.add_argument("--input-price-per-mtok", type=float)
     llm_dry_run_parser.add_argument("--output-price-per-mtok", type=float)
+    llm_smoke_parser = subparsers.add_parser(
+        "llm-classifier-smoke",
+        help="Run or replay the approved five-domain Gemini smoke test",
+    )
+    llm_smoke_parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Call the approved Gemini provider for cache misses",
+    )
+    llm_smoke_parser.add_argument(
+        "--cache-dir",
+        default=str(DEFAULT_LLM_CACHE_DIR),
+        help="Read or write ignored LLM response cache files",
+    )
     cassette_parser = subparsers.add_parser(
         "freeze-cassette", help="Freeze a reviewed live response"
     )
@@ -851,6 +874,172 @@ def llm_classifier_dry_run_payload(
     return payload
 
 
+def _case_a_smoke_domain_inputs() -> tuple[
+    dict[str, DomainClassificationInput],
+    dict[str, str],
+]:
+    case = PHASE_ZERO_CASES[0]
+    category = case["category"]
+    queries = build_search_queries(
+        case["product_name"],
+        category,
+        category_config=load_search_category_config(category),
+    )
+    _, results = _execute_queries(CassetteSearchProvider(), queries)
+    extracted_content, _ = _extract_case_content(
+        results,
+        CassetteExtractProvider(),
+        provider_mode="cassette",
+    )
+    domain_inputs = {
+        item.domain: item
+        for item in group_extracted_pages_by_domain(results, extracted_content)
+    }
+    labels: dict[str, str] = {}
+    for sample in (1, 2):
+        for item in load_adjudicated_results(category, sample=sample):
+            existing = labels.get(item.domain)
+            if existing is not None and existing != item.human_label:
+                raise ValueError(
+                    f"Conflicting human labels for smoke domain {item.domain}"
+                )
+            labels[item.domain] = item.human_label
+    return domain_inputs, labels
+
+
+def _select_case_a_smoke_domains(
+    domain_inputs: Mapping[str, DomainClassificationInput],
+    labels: Mapping[str, str],
+) -> list[str]:
+    selected: list[str] = []
+    for label, quota in LLM_SMOKE_LABEL_QUOTAS.items():
+        candidates = sorted(
+            domain
+            for domain, human_label in labels.items()
+            if human_label == label and domain in domain_inputs
+        )
+        if len(candidates) < quota:
+            raise ValueError(
+                f"Smoke test requires {quota} extracted Case A domains labeled {label}"
+            )
+        selected.extend(candidates[:quota])
+    return selected
+
+
+def llm_classifier_smoke_payload(
+    *,
+    live: bool = False,
+    cache_dir: str | Path = DEFAULT_LLM_CACHE_DIR,
+) -> dict[str, object]:
+    """Run exactly five adjudicated Case A domains or replay their cache offline."""
+
+    case = PHASE_ZERO_CASES[0]
+    domain_inputs, labels = _case_a_smoke_domain_inputs()
+    selected_domains = _select_case_a_smoke_domains(domain_inputs, labels)
+    provider = GeminiLLMProvider() if live else None
+    classifier = LLMCompanyClassifier(
+        provider,
+        cache_dir,
+        on_miss="live" if live else "raise",
+    )
+    rows: list[dict[str, object]] = []
+    cached_input_tokens = 0
+    cached_output_tokens = 0
+    cached_total_tokens = 0
+    for domain in selected_domains:
+        domain_input = domain_inputs[domain]
+        marketplace_reason = "; ".join(domain_input.marketplace_signal_reasons)
+        noise_reason = "; ".join(domain_input.noise_signal_reasons)
+        result = classifier.classify(
+            domain_input.domain,
+            domain_input.title,
+            domain_input.extracted_content,
+            case["product_context"],
+            marketplace_signal=domain_input.marketplace_signal,
+            marketplace_signal_reason=marketplace_reason,
+            noise_signal=domain_input.noise_signal,
+            noise_signal_reason=noise_reason,
+        )
+        key = llm_cache_key(
+            domain_input.domain,
+            domain_input.title,
+            domain_input.extracted_content,
+            case["product_context"],
+            marketplace_signal=domain_input.marketplace_signal,
+            marketplace_signal_reason=marketplace_reason,
+            noise_signal=domain_input.noise_signal,
+            noise_signal_reason=noise_reason,
+        )
+        cached = read_llm_cache(cache_dir, key)
+        if not isinstance(cached, Mapping):
+            raise ValueError(f"LLM smoke cache is missing for {domain}")
+        usage = cached.get("usage_metadata")
+        if not isinstance(usage, Mapping):
+            raise ValueError(f"LLM smoke token usage is missing for {domain}")
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        total_tokens = usage.get("total_tokens")
+        if not all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in (input_tokens, output_tokens, total_tokens)
+        ):
+            raise ValueError(f"LLM smoke token usage is invalid for {domain}")
+        cached_input_tokens += input_tokens
+        cached_output_tokens += output_tokens
+        cached_total_tokens += total_tokens
+        rows.append(
+            {
+                "domain": domain,
+                "human_label": labels[domain],
+                "raw_model_response": cached.get("model_response"),
+                "role": result.role.value,
+                "confidence": result.confidence.value,
+                "citation": result.citation,
+                "reasoning": result.reasoning,
+                "evidence_truncated": result.evidence_truncated,
+                "cache_key": key,
+                "token_usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                },
+            }
+        )
+
+    provider_usage = (
+        provider.execution_metrics
+        if provider is not None
+        else {
+            "model": "gemini-2.5-pro",
+            "http_calls": 0,
+            "call_limit": 75,
+            "retries": 0,
+            "errors_by_type": {},
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+    )
+    return {
+        "mode": "live" if live else "offline_cache",
+        "case": "A",
+        "adjudicated_only": True,
+        "selected_domain_count": len(rows),
+        "excluded_extraction_failed_domains": [
+            "www.industryresearch.biz",
+            "htmcgroup.com",
+            "www.grandviewresearch.com",
+        ],
+        "results": rows,
+        "provider_usage_this_execution": provider_usage,
+        "cached_response_token_totals": {
+            "input_tokens": cached_input_tokens,
+            "output_tokens": cached_output_tokens,
+            "total_tokens": cached_total_tokens,
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if callable(reconfigure):
@@ -894,6 +1083,11 @@ def main(argv: list[str] | None = None) -> int:
             adjudicated_only=args.adjudicated_only,
             input_price_per_mtok=args.input_price_per_mtok,
             output_price_per_mtok=args.output_price_per_mtok,
+        )
+    elif args.command == "llm-classifier-smoke":
+        payload = llm_classifier_smoke_payload(
+            live=args.live,
+            cache_dir=args.cache_dir,
         )
     elif args.command == "freeze-cassette":
         cassette_path = freeze_run_as_cassette(
