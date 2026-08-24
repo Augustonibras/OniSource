@@ -12,7 +12,7 @@ from .company_classifier import LLMProvider, LLMTokenUsage
 
 GEMINI_MODEL = "gemini-2.5-pro"
 GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "https://generativelanguage.googleapis.com/v1/models/"
     f"{GEMINI_MODEL}:generateContent"
 )
 MAX_LLM_CALLS = 75

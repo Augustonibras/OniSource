@@ -26,6 +26,13 @@ from src.search.gemini import (
 PRODUCT_CONTEXT = "titanium dioxide, rutile grade, CAS 13463-67-7"
 
 
+def test_gemini_provider_uses_stable_v1_endpoint() -> None:
+    assert GEMINI_API_URL == (
+        "https://generativelanguage.googleapis.com/v1/models/"
+        "gemini-2.5-pro:generateContent"
+    )
+
+
 def _gemini_response(model_text: str) -> dict[str, object]:
     return {
         "candidates": [
