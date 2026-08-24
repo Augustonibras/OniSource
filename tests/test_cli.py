@@ -231,11 +231,26 @@ def test_llm_classifier_dry_run_has_a_dedicated_command() -> None:
     parser = build_parser()
 
     args = parser.parse_args(
-        ["llm-classifier-dry-run", "--cache-dir", "temporary-cache"]
+        [
+            "llm-classifier-dry-run",
+            "--cache-dir",
+            "temporary-cache",
+            "--adjudicated-only",
+            "--input-price-per-mtok",
+            "1.25",
+            "--output-price-per-mtok",
+            "4.5",
+        ]
     )
+    unpriced = parser.parse_args(["llm-classifier-dry-run"])
 
     assert args.command == "llm-classifier-dry-run"
     assert args.cache_dir == "temporary-cache"
+    assert args.adjudicated_only is True
+    assert args.input_price_per_mtok == 1.25
+    assert args.output_price_per_mtok == 4.5
+    assert unpriced.input_price_per_mtok is None
+    assert unpriced.output_price_per_mtok is None
 
 
 def test_llm_classifier_dry_run_uses_only_offline_cassettes(
@@ -250,14 +265,31 @@ def test_llm_classifier_dry_run_uses_only_offline_cassettes(
     monkeypatch.setattr(research, "TavilySearchProvider", reject_live_provider)
     monkeypatch.setattr(research, "TavilyExtractProvider", reject_live_provider)
 
-    payload = llm_classifier_dry_run_payload(cache_dir=tmp_path)
+    payload = llm_classifier_dry_run_payload(
+        cache_dir=tmp_path,
+        input_price_per_mtok=2.0,
+        output_price_per_mtok=5.0,
+    )
 
     assert payload["mode"] == "dry_run"
+    assert payload["adjudicated_only"] is False
     assert payload["provider_selected"] is False
     assert payload["network_calls_made"] == 0
     assert payload["prompt_version"] == "v2"
     assert payload["max_content_chars"] == 12_000
     assert [case["case"] for case in payload["cases"]] == ["A", "B"]
+    assert all(
+        case["unique_domains"] == len(case["domain_pages"])
+        for case in payload["cases"]
+    )
+    assert all(
+        case["www_root_domain_pair_count"] == len(case["www_root_domain_pairs"])
+        for case in payload["cases"]
+    )
+    assert all(
+        len(case["content_size_diagnostics"]["largest_domains"]) <= 5
+        for case in payload["cases"]
+    )
     assert payload["total_provider_calls_planned"] == sum(
         case["provider_calls_planned"] for case in payload["cases"]
     )
@@ -267,9 +299,44 @@ def test_llm_classifier_dry_run_uses_only_offline_cassettes(
     assert payload["estimated_input_tokens"] == (
         payload["total_prompt_characters"] / 4
     )
+    assert payload["estimated_output_tokens"] == (
+        payload["total_provider_calls_planned"] * 150
+    )
+    assert payload["cost_estimate"]["input_price_per_mtok"] == 2.0
+    assert payload["cost_estimate"]["output_price_per_mtok"] == 5.0
     assert len(list((tmp_path / "_pending").glob("*.prompt.txt"))) == payload[
         "total_provider_calls_planned"
     ]
+
+
+def test_adjudicated_only_dry_run_reports_found_and_absent_labeled_domains(
+    tmp_path,
+) -> None:
+    payload = llm_classifier_dry_run_payload(
+        cache_dir=tmp_path,
+        adjudicated_only=True,
+    )
+
+    assert payload["adjudicated_only"] is True
+    assert "cost_estimate" not in payload
+    for case in payload["cases"]:
+        adjudication = case["adjudication"]
+        found = adjudication["labeled_domains_found"]
+        absent = adjudication["labeled_domains_absent"]
+        assert adjudication["labeled_domains_found_count"] == len(found)
+        assert adjudication["labeled_domains_absent_count"] == len(absent)
+        assert adjudication["labeled_domains_total"] == len(found) + len(absent)
+        assert set(found).isdisjoint(absent)
+        assert case["unique_domains"] == len(found)
+        assert case["provider_calls_planned"] == len(found)
+
+
+def test_llm_dry_run_prices_must_be_supplied_together(tmp_path) -> None:
+    with pytest.raises(ValueError, match="must be provided together"):
+        llm_classifier_dry_run_payload(
+            cache_dir=tmp_path,
+            input_price_per_mtok=1.0,
+        )
 
 
 def test_phase_zero_benchmark_defaults_to_offline_cassettes(monkeypatch) -> None:

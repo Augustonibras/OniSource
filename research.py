@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import statistics
 import sys
 from collections import defaultdict
 from dataclasses import asdict
@@ -20,7 +22,10 @@ from src.extract.models import ExtractResult
 from src.extract.provider import ExtractProvider
 from src.extract.tavily import TavilyExtractProvider
 from src.search.audit import freeze_cache_as_cassette, freeze_run_as_cassette
-from src.search.adjudication import aggregate_adjudicated_evaluations
+from src.search.adjudication import (
+    aggregate_adjudicated_evaluations,
+    load_adjudicated_results,
+)
 from src.search.budget import SearchBudget
 from src.search.cache import CachedSearchProvider
 from src.search.cassette import CassetteSearchProvider
@@ -30,6 +35,9 @@ from src.search.company_classifier import (
     MAX_CONTENT_CHARS,
     PROMPT_VERSION,
     LLMCompanyClassifier,
+    DomainClassificationInput,
+    group_extracted_pages_by_domain,
+    normalize_classifier_domain,
 )
 from src.search.company_evaluation import build_company_classification_report
 from src.search.coverage import build_ground_truth_coverage
@@ -60,6 +68,7 @@ PHASE_ZERO_CASES = (
         "product_context": "phosphoric acid, CAS 7664-38-2",
     },
 )
+ESTIMATED_OUTPUT_TOKENS_PER_CALL = 150
 
 
 def load_category(name: str) -> dict[str, Any]:
@@ -135,6 +144,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_LLM_CACHE_DIR),
         help="Write pending prompts below this ignored cache directory",
     )
+    llm_dry_run_parser.add_argument(
+        "--adjudicated-only",
+        action="store_true",
+        help="Plan only domains labeled by humans in adjudication samples 1 and 2",
+    )
+    llm_dry_run_parser.add_argument("--input-price-per-mtok", type=float)
+    llm_dry_run_parser.add_argument("--output-price-per-mtok", type=float)
     cassette_parser = subparsers.add_parser(
         "freeze-cassette", help="Freeze a reviewed live response"
     )
@@ -499,13 +515,107 @@ def benchmark_payload(
     return payload
 
 
+def _www_root_domain_pairs(domains: list[str]) -> list[dict[str, str]]:
+    domain_set = set(domains)
+    return [
+        {"www_domain": domain, "root_domain": domain.removeprefix("www.")}
+        for domain in sorted(domain_set)
+        if domain.startswith("www.") and domain.removeprefix("www.") in domain_set
+    ]
+
+
+def _content_size_diagnostics(
+    domain_inputs: tuple[DomainClassificationInput, ...],
+) -> dict[str, object]:
+    sizes = sorted(len(item.extracted_content) for item in domain_inputs)
+    if not sizes:
+        distribution: dict[str, int | float | str] = {
+            "minimum": "NOT_DEFINED",
+            "median": "NOT_DEFINED",
+            "p90": "NOT_DEFINED",
+            "maximum": "NOT_DEFINED",
+        }
+    else:
+        p90_index = max(0, math.ceil(len(sizes) * 0.9) - 1)
+        distribution = {
+            "minimum": sizes[0],
+            "median": statistics.median(sizes),
+            "p90": sizes[p90_index],
+            "maximum": sizes[-1],
+        }
+    largest = sorted(
+        (
+            {"domain": item.domain, "content_characters": len(item.extracted_content)}
+            for item in domain_inputs
+        ),
+        key=lambda item: (-item["content_characters"], item["domain"]),
+    )[:5]
+    return {
+        "distribution": distribution,
+        "p90_method": "nearest_rank",
+        "domains_exceeding_max_content_chars": sum(
+            len(item.extracted_content) > MAX_CONTENT_CHARS
+            for item in domain_inputs
+        ),
+        "largest_domains": largest,
+    }
+
+
+def _human_labeled_domains(category: str) -> set[str]:
+    return {
+        normalize_classifier_domain(item.domain)
+        for sample in (1, 2)
+        for item in load_adjudicated_results(category, sample=sample)
+    }
+
+
+def _token_and_cost_estimate(
+    *,
+    calls: int,
+    prompt_characters: int,
+    input_price_per_mtok: float | None,
+    output_price_per_mtok: float | None,
+) -> dict[str, object]:
+    input_tokens = prompt_characters / 4
+    output_tokens = calls * ESTIMATED_OUTPUT_TOKENS_PER_CALL
+    estimate: dict[str, object] = {
+        "estimated_input_tokens": input_tokens,
+        "estimated_output_tokens": output_tokens,
+    }
+    if input_price_per_mtok is None and output_price_per_mtok is None:
+        return estimate
+    if input_price_per_mtok is None or output_price_per_mtok is None:
+        raise ValueError("input and output prices must be provided together")
+    if input_price_per_mtok < 0 or output_price_per_mtok < 0:
+        raise ValueError("input and output prices must be non-negative")
+    input_cost = input_tokens / 1_000_000 * input_price_per_mtok
+    output_cost = output_tokens / 1_000_000 * output_price_per_mtok
+    estimate["cost_estimate"] = {
+        "input_price_per_mtok": input_price_per_mtok,
+        "output_price_per_mtok": output_price_per_mtok,
+        "estimated_input_cost": input_cost,
+        "estimated_output_cost": output_cost,
+        "estimated_total_cost": input_cost + output_cost,
+    }
+    return estimate
+
+
 def llm_classifier_dry_run_payload(
     *,
     cache_dir: str | Path = DEFAULT_LLM_CACHE_DIR,
     extract_cassette_dir: str | Path = DEFAULT_EXTRACT_CASSETTE_DIR,
+    adjudicated_only: bool = False,
+    input_price_per_mtok: float | None = None,
+    output_price_per_mtok: float | None = None,
 ) -> dict[str, Any]:
     """Estimate cache-miss LLM inputs using only committed offline cassettes."""
 
+    _token_and_cost_estimate(
+        calls=0,
+        prompt_characters=0,
+        input_price_per_mtok=input_price_per_mtok,
+        output_price_per_mtok=output_price_per_mtok,
+    )
     search_provider = CassetteSearchProvider()
     extract_path = Path(extract_cassette_dir)
     if not extract_path.is_dir() or not any(extract_path.glob("*.json")):
@@ -529,20 +639,38 @@ def llm_classifier_dry_run_payload(
             extract_provider,
             provider_mode="cassette",
         )
+        all_domain_inputs = group_extracted_pages_by_domain(
+            results,
+            extracted_content,
+        )
+        adjudication: dict[str, object] | None = None
+        if adjudicated_only:
+            labeled_domains = _human_labeled_domains(category)
+            extracted_domains = {item.domain for item in all_domain_inputs}
+            labeled_found = sorted(labeled_domains.intersection(extracted_domains))
+            labeled_absent = sorted(labeled_domains.difference(extracted_domains))
+            domain_inputs = tuple(
+                item for item in all_domain_inputs if item.domain in labeled_domains
+            )
+            adjudication = {
+                "labeled_domains_total": len(labeled_domains),
+                "labeled_domains_found_count": len(labeled_found),
+                "labeled_domains_found": labeled_found,
+                "labeled_domains_absent_count": len(labeled_absent),
+                "labeled_domains_absent": labeled_absent,
+            }
+        else:
+            domain_inputs = all_domain_inputs
         classifier = LLMCompanyClassifier(
             None,
             cache_dir,
             on_miss="dry_run",
         )
-        for result in results:
-            content = extracted_content.get(result.url)
-            if content is None:
-                continue
-            domain = (urlsplit(result.url).hostname or "UNKNOWN_DOMAIN").casefold()
+        for domain_input in domain_inputs:
             classifier.classify(
-                domain,
-                result.title,
-                content,
+                domain_input.domain,
+                domain_input.title,
+                domain_input.extracted_content,
                 case["product_context"],
             )
 
@@ -556,32 +684,62 @@ def llm_classifier_dry_run_payload(
         total_characters += characters
         for reason in LLM_FAILURE_REASONS:
             total_failures[reason] += int(failure_counts[reason])
-        case_payloads.append(
-            {
-                "case": case["case"],
-                "category": category,
-                "product_context": case["product_context"],
-                "extracted_urls": extraction["successful_urls"],
-                "provider_calls_planned": calls,
-                "total_prompt_characters": characters,
-                "estimated_input_tokens": characters / 4,
-                "failure_counts": failure_counts,
-            }
-        )
+        domains = [item.domain for item in domain_inputs]
+        www_pairs = _www_root_domain_pairs(domains)
+        case_payload: dict[str, object] = {
+            "case": case["case"],
+            "category": category,
+            "product_context": case["product_context"],
+            "extracted_urls": extraction["successful_urls"],
+            "unique_domains": len(domain_inputs),
+            "www_root_domain_pair_count": len(www_pairs),
+            "www_root_domain_pairs": www_pairs,
+            "domain_pages": [
+                {
+                    "domain": item.domain,
+                    "pages_merged": item.page_count,
+                    "content_characters": len(item.extracted_content),
+                }
+                for item in domain_inputs
+            ],
+            "content_size_diagnostics": _content_size_diagnostics(domain_inputs),
+            "provider_calls_planned": calls,
+            "total_prompt_characters": characters,
+            **_token_and_cost_estimate(
+                calls=calls,
+                prompt_characters=characters,
+                input_price_per_mtok=input_price_per_mtok,
+                output_price_per_mtok=output_price_per_mtok,
+            ),
+            "failure_counts": failure_counts,
+        }
+        if adjudication is not None:
+            case_payload["adjudication"] = adjudication
+        case_payloads.append(case_payload)
 
-    return {
+    payload: dict[str, Any] = {
         "mode": "dry_run",
+        "adjudicated_only": adjudicated_only,
         "provider_selected": False,
         "network_calls_made": 0,
         "prompt_version": PROMPT_VERSION,
         "max_content_chars": MAX_CONTENT_CHARS,
-        "token_estimation_method": "characters / 4",
+        "token_estimation_method": (
+            "input characters / 4; output 150 tokens / planned call"
+        ),
+        "estimated_output_tokens_per_call": ESTIMATED_OUTPUT_TOKENS_PER_CALL,
         "cases": case_payloads,
         "total_provider_calls_planned": total_calls,
         "total_prompt_characters": total_characters,
-        "estimated_input_tokens": total_characters / 4,
+        **_token_and_cost_estimate(
+            calls=total_calls,
+            prompt_characters=total_characters,
+            input_price_per_mtok=input_price_per_mtok,
+            output_price_per_mtok=output_price_per_mtok,
+        ),
         "failure_counts": total_failures,
     }
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -622,7 +780,12 @@ def main(argv: list[str] | None = None) -> int:
             adjudication_sample=args.adjudication_sample,
         )
     elif args.command == "llm-classifier-dry-run":
-        payload = llm_classifier_dry_run_payload(cache_dir=args.cache_dir)
+        payload = llm_classifier_dry_run_payload(
+            cache_dir=args.cache_dir,
+            adjudicated_only=args.adjudicated_only,
+            input_price_per_mtok=args.input_price_per_mtok,
+            output_price_per_mtok=args.output_price_per_mtok,
+        )
     elif args.command == "freeze-cassette":
         cassette_path = freeze_run_as_cassette(
             args.run_response,

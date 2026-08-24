@@ -6,7 +6,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping
+from urllib.parse import urlsplit
 
 from src.models import CompanyClassification
 
@@ -27,6 +28,7 @@ LLM_FAILURE_REASONS = (
 _CACHE_FIELDS = {"role", "confidence", "citation", "reasoning"}
 _ON_MISS_MODES = {"raise", "dry_run"}
 _INVALID_CACHED_RESPONSE = object()
+PAGE_BREAK = "\n--- PAGE BREAK ---\n"
 
 
 class SupplierRole(str, Enum):
@@ -76,6 +78,76 @@ class CompanyClassifier(ABC):
         product_context: str,
     ) -> ClassificationResult:
         """Classify one domain relative to the supplied product context."""
+
+
+@dataclass(frozen=True, slots=True)
+class DomainClassificationInput:
+    domain: str
+    title: str
+    extracted_content: str
+    page_count: int
+    source_urls: tuple[str, ...]
+
+
+def normalize_classifier_domain(value: str) -> str:
+    """Normalize a host without collapsing www or any other subdomain."""
+
+    candidate = value.strip()
+    parsed = urlsplit(candidate if "://" in candidate else f"//{candidate}")
+    if not parsed.hostname:
+        raise ValueError("domain must contain a hostname")
+    return parsed.hostname.casefold()
+
+
+def group_extracted_pages_by_domain(
+    results: Iterable[SearchResult],
+    extracted_content_by_url: Mapping[str, str],
+) -> tuple[DomainClassificationInput, ...]:
+    """Build one classification input per domain in first-appearance order."""
+
+    grouped: dict[str, dict[str, object]] = {}
+    seen_urls: set[str] = set()
+    for result in results:
+        if result.url in seen_urls or result.url not in extracted_content_by_url:
+            continue
+        seen_urls.add(result.url)
+        domain = normalize_classifier_domain(result.url)
+        if domain not in grouped:
+            grouped[domain] = {
+                "title": result.title,
+                "contents": [],
+                "source_urls": [],
+            }
+        contents = grouped[domain]["contents"]
+        source_urls = grouped[domain]["source_urls"]
+        if not isinstance(contents, list) or not isinstance(source_urls, list):
+            raise TypeError("domain aggregation state must contain lists")
+        contents.append(extracted_content_by_url[result.url])
+        source_urls.append(result.url)
+
+    aggregated: list[DomainClassificationInput] = []
+    for domain, values in grouped.items():
+        contents = values["contents"]
+        source_urls = values["source_urls"]
+        title = values["title"]
+        if (
+            not isinstance(contents, list)
+            or not all(isinstance(item, str) for item in contents)
+            or not isinstance(source_urls, list)
+            or not all(isinstance(item, str) for item in source_urls)
+            or not isinstance(title, str)
+        ):
+            raise TypeError("domain aggregation state is malformed")
+        aggregated.append(
+            DomainClassificationInput(
+                domain=domain,
+                title=title,
+                extracted_content=PAGE_BREAK.join(contents),
+                page_count=len(source_urls),
+                source_urls=tuple(source_urls),
+            )
+        )
+    return tuple(aggregated)
 
 
 class LLMProvider(ABC):
@@ -145,10 +217,7 @@ class RuleBasedCompanyClassifier(CompanyClassifier):
         extracted_content: str,
         product_context: str,
     ) -> ClassificationResult:
-        normalized_domain = domain.strip().removeprefix("https://").removeprefix(
-            "http://"
-        )
-        normalized_domain = normalized_domain.strip("/")
+        normalized_domain = normalize_classifier_domain(domain)
         result = SearchResult(
             url=f"https://{normalized_domain}/",
             title=title,
@@ -188,6 +257,7 @@ def build_llm_company_classifier_prompt(
     extracted_content: str,
     product_context: str,
 ) -> str:
+    normalized_domain = normalize_classifier_domain(domain)
     truncated_content = truncate_extracted_content(extracted_content)
     return f"""You classify the role of an entity relative to a specific product for an internal sourcing evidence system.
 
@@ -217,7 +287,7 @@ Return exactly one JSON object with no Markdown, commentary, or additional keys:
 {{"role":"UNKNOWN","confidence":"LOW","citation":"","reasoning":"short evidence-based reason"}}
 
 domain:
-{domain}
+{normalized_domain}
 
 title:
 {title}
@@ -237,9 +307,16 @@ def llm_cache_key(
     product_context: str,
     prompt_version: str = PROMPT_VERSION,
 ) -> str:
+    normalized_domain = normalize_classifier_domain(domain)
     truncated_content = truncate_extracted_content(extracted_content)
     serialized = json.dumps(
-        [domain, title, truncated_content, product_context, prompt_version],
+        [
+            normalized_domain,
+            title,
+            truncated_content,
+            product_context,
+            prompt_version,
+        ],
         ensure_ascii=False,
         separators=(",", ":"),
     )

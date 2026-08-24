@@ -8,6 +8,7 @@ from src.models import CompanyClassification
 from src.search.company_classifier import (
     LLM_FAILURE_REASONS,
     MAX_CONTENT_CHARS,
+    PAGE_BREAK,
     PROMPT_VERSION,
     ClassificationResult,
     CompanyClassifier,
@@ -18,11 +19,14 @@ from src.search.company_classifier import (
     SupplierRole,
     build_llm_company_classifier_prompt,
     classify_with_citation_gate,
+    group_extracted_pages_by_domain,
     llm_cache_key,
+    normalize_classifier_domain,
     read_llm_cache,
     rule_role_to_supplier_role,
     write_llm_cache,
 )
+from src.search.models import SearchResult
 
 
 PRODUCT_CONTEXT = "titanium dioxide, rutile grade, CAS 13463-67-7"
@@ -81,6 +85,64 @@ def test_supplier_role_matches_the_human_ground_truth_vocabulary() -> None:
         "UNCERTAIN",
         "UNKNOWN",
     ]
+
+
+def _search_result(url: str, title: str) -> SearchResult:
+    return SearchResult(
+        url=url,
+        title=title,
+        snippet="",
+        content="",
+        raw_score=1.0,
+        provider="cassette",
+        query="test",
+        retrieved_at="2026-08-24T00:00:00Z",
+    )
+
+
+def test_domain_normalization_preserves_www_and_other_subdomains() -> None:
+    assert normalize_classifier_domain("HTTPS://WWW.Example.COM:443/") == (
+        "www.example.com"
+    )
+    assert normalize_classifier_domain("example.com:8443/") == "example.com"
+    assert normalize_classifier_domain("en.cjnphos.com") == "en.cjnphos.com"
+    assert normalize_classifier_domain("www.cjnphos.com") == "www.cjnphos.com"
+    assert normalize_classifier_domain("www.example.com") != (
+        normalize_classifier_domain("example.com")
+    )
+
+
+def test_extracted_pages_are_grouped_once_per_domain_in_result_order() -> None:
+    first_url = "https://en.example.com/first"
+    second_url = "https://en.example.com/second"
+    www_url = "https://www.example.com/page"
+    results = [
+        _search_result(first_url, "First title"),
+        _search_result(second_url, "Second title"),
+        _search_result(first_url, "Duplicate search result"),
+        _search_result(www_url, "WWW title"),
+    ]
+
+    grouped = group_extracted_pages_by_domain(
+        results,
+        {
+            first_url: "First page content",
+            second_url: "Second page content",
+            www_url: "WWW page content",
+        },
+    )
+
+    assert [item.domain for item in grouped] == [
+        "en.example.com",
+        "www.example.com",
+    ]
+    assert grouped[0].title == "First title"
+    assert grouped[0].page_count == 2
+    assert grouped[0].source_urls == (first_url, second_url)
+    assert grouped[0].extracted_content == (
+        f"First page content{PAGE_BREAK}Second page content"
+    )
+    assert grouped[1].page_count == 1
 
 
 def test_fixed_rule_roles_are_mapped_explicitly_without_fallback_inference() -> None:
