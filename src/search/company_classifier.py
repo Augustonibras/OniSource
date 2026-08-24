@@ -15,7 +15,7 @@ from .company_evaluation import build_company_classification_report
 from .models import SearchResult
 
 
-PROMPT_VERSION = "v5"
+PROMPT_VERSION = "v6"
 MAX_CONTENT_CHARS = 40_000
 CONTENT_BUDGET_POLICY = "per_page_equal_quota_redistribute_v1"
 DEFAULT_LLM_CACHE_DIR = (
@@ -430,6 +430,17 @@ Class definitions:
 - NOT_A_COMPANY: the page is a news portal, market report, government body, association, or other non-company information source.
 - UNCERTAIN: the evidence supports that this is a potentially relevant company, but its product-relative commercial role remains conflicting or cannot be separated between manufacturer, distributor, and trader.
 - UNKNOWN: the supplied evidence is absent or insufficient to establish that the entity is relevant to the product or to assign any other class.
+
+Classification unit:
+- The task is to classify the entity that owns the domain, using its pages as evidence about that entity.
+- A page about a discontinued, sold out, or out-of-line product does not make the entity NOT_A_SUPPLIER; it is evidence about one product, not about the nature of the company.
+- An article, blog post, comparison, or ranking published on the company's own site does not make the entity MARKETPLACE_OR_DIRECTORY or NOT_A_COMPANY. Those classes describe the nature of the entity: a marketplace or directory exists to list third parties, while NOT_A_COMPANY is a news outlet, market-research consultancy, government body, or association. A trading company that publishes a ranking remains a trading company.
+- When the domain content is predominantly commercial, such as products, quotations, and sales contacts, and only part is editorial, classify according to the commercial content.
+
+Role evidence and fallback:
+- DISTRIBUTOR and TRADER require positive evidence of resale, distribution, import, or export. Do not use either as a default when manufacturing evidence is missing.
+- If the entity clearly supplies the product but the evidence does not separate manufacturing from resale, the role is UNCERTAIN.
+- If there is not enough evidence even for that conclusion, the role is UNKNOWN.
 
 Evidence rules:
 - citation must be a literal, contiguous excerpt from extracted_content; whitespace may be normalized, but words and punctuation must not be changed.

@@ -590,6 +590,13 @@ def test_prompt_uses_human_taxonomy_product_context_and_strict_json() -> None:
     assert '"citation":""' in prompt
     assert '"reasoning":"short evidence-based reason"' in prompt
     assert "whitespace may be normalized" in prompt
+    assert "classify the entity that owns the domain" in prompt
+    assert "discontinued, sold out, or out-of-line product" in prompt
+    assert "published on the company's own site" in prompt
+    assert "A trading company that publishes a ranking remains a trading company" in prompt
+    assert "classify according to the commercial content" in prompt
+    assert "DISTRIBUTOR and TRADER require positive evidence" in prompt
+    assert "the role is UNCERTAIN" in prompt
     assert MAX_CONTENT_CHARS == 40_000
     assert CONTENT_BUDGET_POLICY == "per_page_equal_quota_redistribute_v1"
-    assert PROMPT_VERSION == "v5"
+    assert PROMPT_VERSION == "v6"
