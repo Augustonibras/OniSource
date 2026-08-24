@@ -285,7 +285,7 @@ def test_llm_classifier_dry_run_uses_only_offline_cassettes(
     assert payload["adjudicated_only"] is False
     assert payload["provider_selected"] is False
     assert payload["network_calls_made"] == 0
-    assert payload["prompt_version"] == "v4"
+    assert payload["prompt_version"] == "v5"
     assert payload["max_content_chars"] == 40_000
     assert [case["case"] for case in payload["cases"]] == ["A", "B"]
     assert all(

@@ -14,6 +14,9 @@ from src.search.company_classifier import (
 )
 from src.search.gemini import (
     GEMINI_API_URL,
+    GEMINI_API_VERSION,
+    GEMINI_MAX_OUTPUT_TOKENS,
+    GEMINI_MODEL,
     MAX_LLM_CALLS,
     GeminiAPIKeyMissingError,
     GeminiAuthError,
@@ -28,22 +31,28 @@ from src.search.gemini import (
 PRODUCT_CONTEXT = "titanium dioxide, rutile grade, CAS 13463-67-7"
 
 
-def test_gemini_provider_uses_stable_v1_endpoint() -> None:
+def test_gemini_provider_uses_approved_model_and_api_version() -> None:
+    assert GEMINI_API_VERSION == "v1beta"
+    assert GEMINI_MODEL == "gemini-3.6-flash"
     assert GEMINI_API_URL == (
-        "https://generativelanguage.googleapis.com/v1/models/"
-        "gemini-2.5-pro:generateContent"
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3.6-flash:generateContent"
     )
 
 
 def _gemini_response(model_text: str) -> dict[str, object]:
     return {
         "candidates": [
-            {"content": {"parts": [{"text": model_text}], "role": "model"}}
+            {
+                "content": {"parts": [{"text": model_text}], "role": "model"},
+                "finishReason": "STOP",
+            }
         ],
         "usageMetadata": {
             "promptTokenCount": 100,
             "candidatesTokenCount": 25,
-            "totalTokenCount": 125,
+            "thoughtsTokenCount": 10,
+            "totalTokenCount": 135,
         },
     }
 
@@ -103,7 +112,7 @@ def test_gemini_provider_retries_transient_errors_and_reports_real_tokens() -> N
     response_text, usage = provider.parse_response(raw_response)
 
     assert response_text == model_text
-    assert usage == LLMTokenUsage(100, 25, 125)
+    assert usage == LLMTokenUsage(100, 25, 135, 10, "STOP", False)
     assert sleeps == [1, 2]
     assert len(session.calls) == 3
     assert session.calls[0]["url"] == GEMINI_API_URL
@@ -113,6 +122,7 @@ def test_gemini_provider_retries_transient_errors_and_reports_real_tokens() -> N
         "generationConfig": {
             "temperature": 0,
             "responseMimeType": "application/json",
+            "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
         },
     }
     assert session.calls[0]["headers"] == {
@@ -120,14 +130,75 @@ def test_gemini_provider_retries_transient_errors_and_reports_real_tokens() -> N
         "x-goog-api-key": "test-secret",
     }
     assert provider.execution_metrics == {
-        "model": "gemini-2.5-pro",
+        "model": "gemini-3.6-flash",
         "http_calls": 3,
         "call_limit": MAX_LLM_CALLS,
         "retries": 2,
         "errors_by_type": {"GeminiTransientError": 2},
         "input_tokens": 100,
         "output_tokens": 25,
-        "total_tokens": 125,
+        "thoughts_tokens": 10,
+        "total_tokens": 135,
+    }
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "content"),
+    [
+        ("MAX_TOKENS", {"parts": [{"text": "partial output"}]}),
+        ("STOP", {}),
+    ],
+    ids=("max-tokens", "empty-content"),
+)
+def test_incomplete_response_becomes_unknown_and_is_counted(
+    tmp_path,
+    finish_reason,
+    content,
+) -> None:
+    raw_response = {
+        "candidates": [
+            {"content": content, "finishReason": finish_reason}
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 1,
+            "thoughtsTokenCount": 5,
+            "totalTokenCount": 6,
+        },
+    }
+    session = _FakeSession([_FakeResponse(200, raw_response)])
+    provider = GeminiLLMProvider(
+        env={"GEMINI_API_KEY": "test-secret"},
+        session=session,
+    )
+    classifier = LLMCompanyClassifier(provider, tmp_path, on_miss="live")
+
+    result = classifier.classify(
+        "example.com",
+        "Example",
+        "Extracted evidence",
+        PRODUCT_CONTEXT,
+    )
+    key = llm_cache_key(
+        "example.com",
+        "Example",
+        "Extracted evidence",
+        PRODUCT_CONTEXT,
+        model=GEMINI_MODEL,
+    )
+    cached = read_llm_cache(tmp_path, key)
+
+    assert result.role is SupplierRole.UNKNOWN
+    assert result.reasoning == "EMPTY_RESPONSE"
+    assert classifier.execution_metrics["failure_counts"]["EMPTY_RESPONSE"] == 1
+    assert isinstance(cached, dict)
+    assert cached["failure_reason"] == "EMPTY_RESPONSE"
+    assert cached["usage_metadata"] == {
+        "input_tokens": 1,
+        "output_tokens": 0,
+        "thoughts_tokens": 5,
+        "total_tokens": 6,
+        "finish_reason": finish_reason,
+        "empty_response": True,
     }
 
 
@@ -288,5 +359,8 @@ def test_live_classifier_caches_raw_response_before_parse_and_replays_offline(
     assert cached["usage_metadata"] == {
         "input_tokens": 50,
         "output_tokens": 20,
+        "thoughts_tokens": 0,
         "total_tokens": 70,
+        "finish_reason": "",
+        "empty_response": False,
     }

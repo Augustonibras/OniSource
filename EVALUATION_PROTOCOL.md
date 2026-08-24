@@ -240,6 +240,8 @@ O conjunto 2 é um conjunto de validação humana e não foi usado para escrever
 
 O `extracted_content` agregado por domínio recebe um orçamento determinístico de 40.000 caracteres antes da montagem do prompt e antes do cálculo da chave de cache. Cada página recebe inicialmente uma cota de `40.000 // número_de_páginas`; páginas abaixo da cota devolvem a sobra, que é redistribuída em passes sucessivos entre as páginas ainda acima da cota. Cada bloco cortado termina com `[TRUNCATED]`. O limite, a política de redistribuição e o resultado truncado fazem parte da entrada avaliada e da chave de cache; conteúdo omitido não pode sustentar a classificação ou sua citação.
 
+Os modelos da linha Gemini 2.5 foram descontinuados para projetos novos, embora ainda apareçam no `ListModels`. O `gemini-3.1-pro-preview` exige faturamento ativo neste projeto; o `gemini-3.6-flash` em `v1beta` é a linha de base gratuita da Fase 0.
+
 ### Política de cobertura da extração
 
 Os gates de marketplace/diretório e de domínio de ruído não bloqueiam a extração. Eles são preservados respectivamente como `marketplace_signal` e `noise_signal`, com o motivo da correspondência, e disponibilizados ao classificador como sinais não determinísticos. `MARKETPLACE_OR_DIRECTORY` e `NOT_A_COMPANY` são classes do gabarito humano; descartar esses resultados antes da classificação tornaria impossível medir essas classes.

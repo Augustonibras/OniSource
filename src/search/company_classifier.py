@@ -15,7 +15,7 @@ from .company_evaluation import build_company_classification_report
 from .models import SearchResult
 
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 MAX_CONTENT_CHARS = 40_000
 CONTENT_BUDGET_POLICY = "per_page_equal_quota_redistribute_v1"
 DEFAULT_LLM_CACHE_DIR = (
@@ -25,6 +25,7 @@ LLM_FAILURE_REASONS = (
     "NO_CITATION",
     "CITATION_NOT_FOUND",
     "INVALID_RESPONSE",
+    "EMPTY_RESPONSE",
 )
 _CACHE_FIELDS = {"role", "confidence", "citation", "reasoning"}
 _ON_MISS_MODES = {"raise", "dry_run", "live"}
@@ -116,12 +117,16 @@ class LLMTokenUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    thoughts_tokens: int = 0
+    finish_reason: str = ""
+    empty_response: bool = False
 
     def __post_init__(self) -> None:
         for field_value in (
             self.input_tokens,
             self.output_tokens,
             self.total_tokens,
+            self.thoughts_tokens,
         ):
             if (
                 isinstance(field_value, bool)
@@ -129,6 +134,10 @@ class LLMTokenUsage:
                 or field_value < 0
             ):
                 raise ValueError("LLM token usage must contain non-negative integers")
+        if not isinstance(self.finish_reason, str):
+            raise TypeError("finish_reason must be text")
+        if not isinstance(self.empty_response, bool):
+            raise TypeError("empty_response must be boolean")
 
 
 def normalize_classifier_domain(value: str) -> str:
@@ -219,6 +228,7 @@ def group_extracted_pages_by_domain(
 
 class LLMProvider(ABC):
     provider_name = "unconfigured_llm"
+    model = "unconfigured_llm"
 
     @abstractmethod
     def complete(self, prompt: str) -> object:
@@ -493,6 +503,7 @@ def _llm_cache_key_from_budgeted_evidence(
     budgeted_evidence: BudgetedEvidence,
     product_context: str,
     prompt_version: str,
+    model: str,
     marketplace_signal: bool,
     marketplace_signal_reason: str,
     noise_signal: bool,
@@ -506,6 +517,7 @@ def _llm_cache_key_from_budgeted_evidence(
             budgeted_evidence.evidence_truncated,
             product_context,
             prompt_version,
+            model,
             MAX_CONTENT_CHARS,
             CONTENT_BUDGET_POLICY,
             marketplace_signal,
@@ -526,6 +538,7 @@ def llm_cache_key(
     product_context: str,
     prompt_version: str = PROMPT_VERSION,
     *,
+    model: str = LLMProvider.model,
     marketplace_signal: bool = False,
     marketplace_signal_reason: str = "",
     noise_signal: bool = False,
@@ -539,6 +552,7 @@ def llm_cache_key(
         budgeted_evidence,
         product_context,
         prompt_version,
+        model,
         marketplace_signal,
         marketplace_signal_reason,
         noise_signal,
@@ -610,6 +624,7 @@ def _provider_cache_envelope(
     return {
         "format": _PROVIDER_CACHE_FORMAT,
         "provider": provider.provider_name,
+        "model": provider.model,
         "prompt_version": PROMPT_VERSION,
         "raw_response": raw_response,
     }
@@ -621,6 +636,15 @@ def _cached_model_response(cached_response: object) -> object:
     if cached_response.get("format") != _PROVIDER_CACHE_FORMAT:
         return cached_response
     return cached_response.get("model_response", _INVALID_CACHED_RESPONSE)
+
+
+def _cached_failure_reason(cached_response: object) -> str | None:
+    if not isinstance(cached_response, Mapping):
+        return None
+    if cached_response.get("format") != _PROVIDER_CACHE_FORMAT:
+        return None
+    failure_reason = cached_response.get("failure_reason")
+    return failure_reason if failure_reason == "EMPTY_RESPONSE" else None
 
 
 class LLMCompanyClassifier(CompanyClassifier):
@@ -635,10 +659,14 @@ class LLMCompanyClassifier(CompanyClassifier):
         cache_dir: str | Path = DEFAULT_LLM_CACHE_DIR,
         *,
         on_miss: str = "raise",
+        model: str | None = None,
     ) -> None:
         if on_miss not in _ON_MISS_MODES:
             raise ValueError("on_miss must be 'raise', 'dry_run' or 'live'")
         self.provider = provider
+        self.model = (
+            provider.model if provider is not None else (model or LLMProvider.model)
+        )
         self.cache_dir = Path(cache_dir)
         self.on_miss = on_miss
         self._failure_counts = {reason: 0 for reason in LLM_FAILURE_REASONS}
@@ -689,6 +717,7 @@ class LLMCompanyClassifier(CompanyClassifier):
             budgeted_evidence,
             product_context,
             self.prompt_version,
+            self.model,
             marketplace_signal,
             marketplace_signal_reason,
             noise_signal,
@@ -696,6 +725,12 @@ class LLMCompanyClassifier(CompanyClassifier):
         )
         cached_response = read_llm_cache(self.cache_dir, key)
         if cached_response is not None:
+            cached_failure_reason = _cached_failure_reason(cached_response)
+            if cached_failure_reason is not None:
+                return self._failure_result(
+                    cached_failure_reason,
+                    evidence_truncated=budgeted_evidence.evidence_truncated,
+                )
             return self._parse_response(
                 _cached_model_response(cached_response),
                 extracted_content=budgeted_evidence.content,
@@ -733,9 +768,19 @@ class LLMCompanyClassifier(CompanyClassifier):
         cache_envelope["usage_metadata"] = {
             "input_tokens": token_usage.input_tokens,
             "output_tokens": token_usage.output_tokens,
+            "thoughts_tokens": token_usage.thoughts_tokens,
             "total_tokens": token_usage.total_tokens,
+            "finish_reason": token_usage.finish_reason,
+            "empty_response": token_usage.empty_response,
         }
+        if token_usage.empty_response:
+            cache_envelope["failure_reason"] = "EMPTY_RESPONSE"
         write_llm_cache(self.cache_dir, key, cache_envelope)
+        if token_usage.empty_response:
+            return self._failure_result(
+                "EMPTY_RESPONSE",
+                evidence_truncated=budgeted_evidence.evidence_truncated,
+            )
         return self._parse_response(
             model_response,
             extracted_content=budgeted_evidence.content,

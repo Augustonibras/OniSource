@@ -50,7 +50,7 @@ from src.search.extraction_selection import (
     attach_extraction_signals,
     select_extraction_urls,
 )
-from src.search.gemini import GeminiLLMProvider
+from src.search.gemini import GEMINI_MODEL, GeminiLLMProvider
 from src.search.models import SearchResult
 from src.search.provider import SearchProvider
 from src.search.query_builder import QUERY_SET_VERSION, build_search_queries
@@ -775,6 +775,7 @@ def llm_classifier_dry_run_payload(
             None,
             cache_dir,
             on_miss="dry_run",
+            model=GEMINI_MODEL,
         )
         evidence_truncated_domains: list[str] = []
         for domain_input in domain_inputs:
@@ -941,10 +942,12 @@ def llm_classifier_smoke_payload(
         provider,
         cache_dir,
         on_miss="live" if live else "raise",
+        model=GEMINI_MODEL,
     )
     rows: list[dict[str, object]] = []
     cached_input_tokens = 0
     cached_output_tokens = 0
+    cached_thoughts_tokens = 0
     cached_total_tokens = 0
     for domain in selected_domains:
         domain_input = domain_inputs[domain]
@@ -965,6 +968,7 @@ def llm_classifier_smoke_payload(
             domain_input.title,
             domain_input.extracted_content,
             case["product_context"],
+            model=GEMINI_MODEL,
             marketplace_signal=domain_input.marketplace_signal,
             marketplace_signal_reason=marketplace_reason,
             noise_signal=domain_input.noise_signal,
@@ -978,14 +982,22 @@ def llm_classifier_smoke_payload(
             raise ValueError(f"LLM smoke token usage is missing for {domain}")
         input_tokens = usage.get("input_tokens")
         output_tokens = usage.get("output_tokens")
+        thoughts_tokens = usage.get("thoughts_tokens")
         total_tokens = usage.get("total_tokens")
+        finish_reason = usage.get("finish_reason")
         if not all(
             isinstance(value, int) and not isinstance(value, bool)
-            for value in (input_tokens, output_tokens, total_tokens)
-        ):
+            for value in (
+                input_tokens,
+                output_tokens,
+                thoughts_tokens,
+                total_tokens,
+            )
+        ) or not isinstance(finish_reason, str):
             raise ValueError(f"LLM smoke token usage is invalid for {domain}")
         cached_input_tokens += input_tokens
         cached_output_tokens += output_tokens
+        cached_thoughts_tokens += thoughts_tokens
         cached_total_tokens += total_tokens
         rows.append(
             {
@@ -996,11 +1008,13 @@ def llm_classifier_smoke_payload(
                 "confidence": result.confidence.value,
                 "citation": result.citation,
                 "reasoning": result.reasoning,
+                "finishReason": finish_reason,
                 "evidence_truncated": result.evidence_truncated,
                 "cache_key": key,
                 "token_usage": {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
+                    "thoughts_tokens": thoughts_tokens,
                     "total_tokens": total_tokens,
                 },
             }
@@ -1010,13 +1024,14 @@ def llm_classifier_smoke_payload(
         provider.execution_metrics
         if provider is not None
         else {
-            "model": "gemini-2.5-pro",
+            "model": GEMINI_MODEL,
             "http_calls": 0,
             "call_limit": 75,
             "retries": 0,
             "errors_by_type": {},
             "input_tokens": 0,
             "output_tokens": 0,
+            "thoughts_tokens": 0,
             "total_tokens": 0,
         }
     )
@@ -1035,6 +1050,7 @@ def llm_classifier_smoke_payload(
         "cached_response_token_totals": {
             "input_tokens": cached_input_tokens,
             "output_tokens": cached_output_tokens,
+            "thoughts_tokens": cached_thoughts_tokens,
             "total_tokens": cached_total_tokens,
         },
     }

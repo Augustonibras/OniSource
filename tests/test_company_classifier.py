@@ -287,6 +287,25 @@ def test_cache_key_changes_with_product_context() -> None:
     assert first != second
 
 
+def test_cache_key_changes_with_model() -> None:
+    first = llm_cache_key(
+        "example.com",
+        "Example",
+        "Content",
+        PRODUCT_CONTEXT,
+        model="model-a",
+    )
+    second = llm_cache_key(
+        "example.com",
+        "Example",
+        "Content",
+        PRODUCT_CONTEXT,
+        model="model-b",
+    )
+
+    assert first != second
+
+
 def test_cache_key_and_prompt_include_retrieval_signals() -> None:
     baseline = llm_cache_key(
         "example.com",
@@ -573,4 +592,4 @@ def test_prompt_uses_human_taxonomy_product_context_and_strict_json() -> None:
     assert "whitespace may be normalized" in prompt
     assert MAX_CONTENT_CHARS == 40_000
     assert CONTENT_BUDGET_POLICY == "per_page_equal_quota_redistribute_v1"
-    assert PROMPT_VERSION == "v4"
+    assert PROMPT_VERSION == "v5"

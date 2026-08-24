@@ -10,9 +10,12 @@ import requests
 from .company_classifier import LLMProvider, LLMTokenUsage
 
 
-GEMINI_MODEL = "gemini-2.5-pro"
+# Gemini 2.5 is still listed but retired for new projects; Pro requires billing.
+GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_API_VERSION = "v1beta"
+GEMINI_MAX_OUTPUT_TOKENS = 2048
 GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1/models/"
+    f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/"
     f"{GEMINI_MODEL}:generateContent"
 )
 MAX_LLM_CALLS = 75
@@ -118,6 +121,7 @@ class GeminiLLMProvider(LLMProvider):
         self._error_counts: dict[str, int] = {}
         self._input_tokens = 0
         self._output_tokens = 0
+        self._thoughts_tokens = 0
         self._total_tokens = 0
 
     @property
@@ -130,6 +134,7 @@ class GeminiLLMProvider(LLMProvider):
             "errors_by_type": dict(self._error_counts),
             "input_tokens": self._input_tokens,
             "output_tokens": self._output_tokens,
+            "thoughts_tokens": self._thoughts_tokens,
             "total_tokens": self._total_tokens,
         }
 
@@ -139,6 +144,7 @@ class GeminiLLMProvider(LLMProvider):
             "generationConfig": {
                 "temperature": 0,
                 "responseMimeType": "application/json",
+                "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
             },
         }
         headers = {
@@ -218,37 +224,59 @@ class GeminiLLMProvider(LLMProvider):
         first_candidate = candidates[0]
         if not isinstance(first_candidate, Mapping):
             raise GeminiMalformedResponseError("Gemini candidate is invalid")
-        content = first_candidate.get("content")
-        if not isinstance(content, Mapping):
-            raise GeminiMalformedResponseError("Gemini candidate content is missing")
-        parts = content.get("parts")
-        if not isinstance(parts, list) or not parts:
-            raise GeminiMalformedResponseError("Gemini candidate parts are missing")
-        text_parts: list[str] = []
-        for part in parts:
-            if not isinstance(part, Mapping) or not isinstance(part.get("text"), str):
-                raise GeminiMalformedResponseError("Gemini text part is invalid")
-            text_parts.append(part["text"])
-
+        finish_reason = first_candidate.get("finishReason", "")
+        if not isinstance(finish_reason, str):
+            raise GeminiMalformedResponseError("Gemini finishReason is invalid")
         usage_metadata = raw_response.get("usageMetadata")
         if not isinstance(usage_metadata, Mapping):
             raise GeminiMalformedResponseError("Gemini usageMetadata is missing")
+        content = first_candidate.get("content")
+        parts = content.get("parts") if isinstance(content, Mapping) else None
+        empty_response = finish_reason == "MAX_TOKENS" or not parts
+        text_parts: list[str] = []
+        if not empty_response:
+            if not isinstance(parts, list):
+                raise GeminiMalformedResponseError("Gemini candidate parts are invalid")
+            for part in parts:
+                if not isinstance(part, Mapping) or not isinstance(
+                    part.get("text"), str
+                ):
+                    raise GeminiMalformedResponseError("Gemini text part is invalid")
+                text_parts.append(part["text"])
+            empty_response = not "".join(text_parts).strip()
+
         usage = LLMTokenUsage(
             input_tokens=self._usage_value(usage_metadata, "promptTokenCount"),
             output_tokens=self._usage_value(
                 usage_metadata,
                 "candidatesTokenCount",
+                required=False,
             ),
             total_tokens=self._usage_value(usage_metadata, "totalTokenCount"),
+            thoughts_tokens=self._usage_value(
+                usage_metadata,
+                "thoughtsTokenCount",
+                required=False,
+            ),
+            finish_reason=finish_reason,
+            empty_response=empty_response,
         )
         self._input_tokens += usage.input_tokens
         self._output_tokens += usage.output_tokens
+        self._thoughts_tokens += usage.thoughts_tokens
         self._total_tokens += usage.total_tokens
         return "".join(text_parts), usage
 
     @staticmethod
-    def _usage_value(usage_metadata: Mapping[object, object], field: str) -> int:
+    def _usage_value(
+        usage_metadata: Mapping[object, object],
+        field: str,
+        *,
+        required: bool = True,
+    ) -> int:
         value = usage_metadata.get(field)
+        if value is None and not required:
+            return 0
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise GeminiMalformedResponseError(
                 f"Gemini usageMetadata.{field} is invalid"
