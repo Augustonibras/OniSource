@@ -14,11 +14,30 @@ from .company_evaluation import build_company_classification_report
 from .models import SearchResult
 
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
+MAX_CONTENT_CHARS = 12_000
 DEFAULT_LLM_CACHE_DIR = (
     Path(__file__).resolve().parents[2] / "cache" / "llm_classifier"
 )
+LLM_FAILURE_REASONS = (
+    "NO_CITATION",
+    "CITATION_NOT_FOUND",
+    "INVALID_RESPONSE",
+)
 _CACHE_FIELDS = {"role", "confidence", "citation", "reasoning"}
+_ON_MISS_MODES = {"raise", "dry_run"}
+_INVALID_CACHED_RESPONSE = object()
+
+
+class SupplierRole(str, Enum):
+    MANUFACTURER = "MANUFACTURER"
+    DISTRIBUTOR = "DISTRIBUTOR"
+    TRADER = "TRADER"
+    MARKETPLACE_OR_DIRECTORY = "MARKETPLACE_OR_DIRECTORY"
+    NOT_A_SUPPLIER = "NOT_A_SUPPLIER"
+    NOT_A_COMPANY = "NOT_A_COMPANY"
+    UNCERTAIN = "UNCERTAIN"
+    UNKNOWN = "UNKNOWN"
 
 
 class Confidence(str, Enum):
@@ -29,14 +48,14 @@ class Confidence(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ClassificationResult:
-    role: CompanyClassification
+    role: SupplierRole
     confidence: Confidence
     citation: str
     reasoning: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.role, CompanyClassification):
-            raise TypeError("role must be a CompanyClassification")
+        if not isinstance(self.role, SupplierRole):
+            raise TypeError("role must be a SupplierRole")
         if not isinstance(self.confidence, Confidence):
             raise TypeError("confidence must be a Confidence")
         if not isinstance(self.citation, str):
@@ -46,14 +65,17 @@ class ClassificationResult:
 
 
 class CompanyClassifier(ABC):
+    requires_citation: bool
+
     @abstractmethod
     def classify(
         self,
         domain: str,
         title: str,
         extracted_content: str,
+        product_context: str,
     ) -> ClassificationResult:
-        """Classify one domain using only the supplied page evidence."""
+        """Classify one domain relative to the supplied product context."""
 
 
 class LLMProvider(ABC):
@@ -67,23 +89,61 @@ def classify_with_citation_gate(
     domain: str,
     title: str,
     extracted_content: str,
+    product_context: str,
 ) -> ClassificationResult:
-    """Consume a classifier result and enforce the mandatory evidence gate."""
+    """Consume a result and apply the citation gate only when required."""
 
-    result = classifier.classify(domain, title, extracted_content)
-    if not result.citation.strip():
-        return replace(result, role=CompanyClassification.UNKNOWN)
+    result = classifier.classify(
+        domain,
+        title,
+        extracted_content,
+        product_context,
+    )
+    if classifier.requires_citation and not result.citation.strip():
+        return replace(
+            result,
+            role=SupplierRole.UNKNOWN,
+            reasoning="NO_CITATION",
+        )
     return result
+
+
+_RULE_ROLE_MAP = {
+    CompanyClassification.VERIFIED_MANUFACTURER.value: SupplierRole.MANUFACTURER,
+    CompanyClassification.PROBABLE_MANUFACTURER.value: SupplierRole.MANUFACTURER,
+    CompanyClassification.VERIFIED_DISTRIBUTOR.value: SupplierRole.DISTRIBUTOR,
+    CompanyClassification.PROBABLE_DISTRIBUTOR.value: SupplierRole.DISTRIBUTOR,
+    CompanyClassification.TRADER.value: SupplierRole.TRADER,
+    CompanyClassification.UNKNOWN.value: SupplierRole.UNKNOWN,
+    "MANUFACTURER": SupplierRole.MANUFACTURER,
+    "DISTRIBUTOR": SupplierRole.DISTRIBUTOR,
+    "MARKETPLACE": SupplierRole.MARKETPLACE_OR_DIRECTORY,
+    "NOT_A_COMPANY": SupplierRole.NOT_A_COMPANY,
+}
+
+
+def rule_role_to_supplier_role(
+    rule_role: CompanyClassification | str,
+) -> SupplierRole:
+    """Map the fixed-rule vocabulary explicitly; unmapped values stay UNKNOWN."""
+
+    value = rule_role.value if isinstance(rule_role, CompanyClassification) else rule_role
+    if not isinstance(value, str):
+        return SupplierRole.UNKNOWN
+    return _RULE_ROLE_MAP.get(value, SupplierRole.UNKNOWN)
 
 
 class RuleBasedCompanyClassifier(CompanyClassifier):
     """Adapter over the existing fixed-rule report implementation."""
+
+    requires_citation = False
 
     def classify(
         self,
         domain: str,
         title: str,
         extracted_content: str,
+        product_context: str,
     ) -> ClassificationResult:
         normalized_domain = domain.strip().removeprefix("https://").removeprefix(
             "http://"
@@ -100,16 +160,14 @@ class RuleBasedCompanyClassifier(CompanyClassifier):
             retrieved_at="1970-01-01T00:00:00Z",
         )
         report = build_company_classification_report(
-            "",
+            product_context,
             [result],
             extracted_content_by_url={result.url: extracted_content},
         )
         classification = report["results"][0]["domain_classification"]
-        detailed_role = classification["detailed_classification"]
-        try:
-            role = CompanyClassification(detailed_role)
-        except ValueError:
-            role = CompanyClassification.UNKNOWN
+        role = rule_role_to_supplier_role(
+            classification["detailed_classification"]
+        )
         reason_codes = classification["reason_codes"]
         reasoning = ", ".join(reason_codes) or "NO_CLASSIFICATION_RULE_MATCHED"
         return ClassificationResult(
@@ -120,30 +178,39 @@ class RuleBasedCompanyClassifier(CompanyClassifier):
         )
 
 
+def truncate_extracted_content(extracted_content: str) -> str:
+    return extracted_content[:MAX_CONTENT_CHARS]
+
+
 def build_llm_company_classifier_prompt(
     domain: str,
     title: str,
     extracted_content: str,
+    product_context: str,
 ) -> str:
-    return f"""You classify company roles for an internal sourcing evidence system.
+    truncated_content = truncate_extracted_content(extracted_content)
+    return f"""You classify the role of an entity relative to a specific product for an internal sourcing evidence system.
 
-Use only the supplied domain, page title, and extracted page content. Never infer a role from the domain name, site appearance, wording quality, or an unsupported claim. When evidence is missing, ambiguous, or contradictory, return UNKNOWN. A false MANUFACTURER classification is worse than a false negative.
+Use only the supplied domain, page title, product context, and extracted page content. The classification must always be relative to product_context. Never infer a role from the domain name, site appearance, wording quality, or an unsupported claim. When evidence is missing, ambiguous, or contradictory, return UNKNOWN. A false MANUFACTURER classification is worse than a false negative.
 
-Allowed role values are exactly: VERIFIED_MANUFACTURER, PROBABLE_MANUFACTURER, VERIFIED_DISTRIBUTOR, PROBABLE_DISTRIBUTOR, TRADER, UNKNOWN.
+Allowed role values are exactly: MANUFACTURER, DISTRIBUTOR, TRADER, MARKETPLACE_OR_DIRECTORY, NOT_A_SUPPLIER, NOT_A_COMPANY, UNCERTAIN, UNKNOWN.
 Allowed confidence values are exactly: HIGH, MEDIUM, LOW.
 
-Role guidance:
-- MANUFACTURER requires text showing that the company itself produces or operates manufacturing for the relevant product. A generic self-description as a manufacturer is insufficient without production evidence.
-- DISTRIBUTOR requires text showing distribution or resale of products.
-- TRADER requires text showing trading, importing, exporting, or commercial intermediation without supported own production.
-- VERIFIED roles require explicit corroborating evidence in the supplied content; otherwise use the corresponding PROBABLE role or UNKNOWN.
-- If the page is a report, news article, association, directory, marketplace, or data platform rather than the classified company's own page, return UNKNOWN.
+Class definitions:
+- MANUFACTURER: the company itself produces or operates manufacturing for the product in product_context, supported by production evidence beyond a generic self-description.
+- DISTRIBUTOR: the company distributes or resells the product in product_context without supported evidence that it manufactures that product itself.
+- TRADER: the company trades, imports, exports, or intermediates the product in product_context without supported own production.
+- MARKETPLACE_OR_DIRECTORY: the page lists multiple sellers, suppliers, companies, or trade records as a marketplace, directory, or data platform rather than representing one supplier.
+- NOT_A_SUPPLIER: the entity is a company, but the supplied evidence shows that it does not sell or supply the product in product_context.
+- NOT_A_COMPANY: the page is a news portal, market report, government body, association, or other non-company information source.
+- UNCERTAIN: the evidence supports that this is a potentially relevant company, but its product-relative commercial role remains conflicting or cannot be separated between manufacturer, distributor, and trader.
+- UNKNOWN: the supplied evidence is absent or insufficient to establish that the entity is relevant to the product or to assign any other class.
 
 Evidence rules:
-- citation must be a literal, contiguous excerpt copied exactly from extracted_content.
+- citation must be a literal, contiguous excerpt from extracted_content; whitespace may be normalized, but words and punctuation must not be changed.
 - Do not use the domain or title as the citation.
 - Choose the shortest excerpt that directly supports the role.
-- If no literal supporting excerpt exists in extracted_content, set role to UNKNOWN and citation to an empty string.
+- If no supporting excerpt exists in extracted_content, set role to UNKNOWN and citation to an empty string.
 - reasoning must be short and must not add facts absent from the supplied input.
 
 Return exactly one JSON object with no Markdown, commentary, or additional keys:
@@ -155,8 +222,11 @@ domain:
 title:
 {title}
 
+product_context:
+{product_context}
+
 extracted_content:
-{extracted_content}
+{truncated_content}
 """
 
 
@@ -164,10 +234,12 @@ def llm_cache_key(
     domain: str,
     title: str,
     extracted_content: str,
+    product_context: str,
     prompt_version: str = PROMPT_VERSION,
 ) -> str:
+    truncated_content = truncate_extracted_content(extracted_content)
     serialized = json.dumps(
-        [domain, title, extracted_content, prompt_version],
+        [domain, title, truncated_content, product_context, prompt_version],
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -177,24 +249,23 @@ def llm_cache_key(
 def read_llm_cache(
     cache_dir: str | Path,
     key: str,
-) -> dict[str, object] | None:
+) -> object | None:
     path = Path(cache_dir) / f"{key}.json"
     if not path.is_file():
         return None
     try:
         with path.open("r", encoding="utf-8") as cache_file:
-            payload = json.load(cache_file)
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"Invalid LLM classifier cache entry: {path}") from error
-    if not isinstance(payload, dict):
-        raise ValueError(f"LLM classifier cache entry must be an object: {path}")
-    return payload
+            return json.load(cache_file)
+    except json.JSONDecodeError:
+        return _INVALID_CACHED_RESPONSE
+    except OSError as error:
+        raise ValueError(f"Could not read LLM classifier cache entry: {path}") from error
 
 
 def write_llm_cache(
     cache_dir: str | Path,
     key: str,
-    response: Mapping[str, object],
+    response: object,
 ) -> Path:
     directory = Path(cache_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -210,66 +281,141 @@ def write_llm_cache(
     return path
 
 
+def write_pending_prompt(
+    cache_dir: str | Path,
+    key: str,
+    prompt: str,
+) -> Path:
+    pending_dir = Path(cache_dir) / "_pending"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    path = pending_dir / f"{key}.prompt.txt"
+    temporary_path = pending_dir / f".{key}.tmp"
+    try:
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as prompt_file:
+            prompt_file.write(prompt)
+        temporary_path.replace(path)
+    except OSError as error:
+        raise ValueError(f"Could not write pending LLM prompt: {path}") from error
+    return path
+
+
+def _normalized_whitespace(value: str) -> str:
+    return " ".join(value.split())
+
+
 class LLMCompanyClassifier(CompanyClassifier):
     """Cache-only LLM classifier skeleton; live provider calls are disabled."""
 
+    requires_citation = True
     prompt_version = PROMPT_VERSION
 
     def __init__(
         self,
         provider: LLMProvider | None,
         cache_dir: str | Path = DEFAULT_LLM_CACHE_DIR,
+        *,
+        on_miss: str = "raise",
     ) -> None:
+        if on_miss not in _ON_MISS_MODES:
+            raise ValueError("on_miss must be 'raise' or 'dry_run'")
         self.provider = provider
         self.cache_dir = Path(cache_dir)
+        self.on_miss = on_miss
+        self._failure_counts = {reason: 0 for reason in LLM_FAILURE_REASONS}
+        self._planned_keys: set[str] = set()
+        self._planned_calls = 0
+        self._total_prompt_characters = 0
+
+    @property
+    def execution_metrics(self) -> dict[str, object]:
+        return {
+            "provider_calls_planned": self._planned_calls,
+            "total_prompt_characters": self._total_prompt_characters,
+            "estimated_input_tokens": self._total_prompt_characters / 4,
+            "token_estimation_method": "characters / 4",
+            "failure_counts": dict(self._failure_counts),
+        }
 
     def classify(
         self,
         domain: str,
         title: str,
         extracted_content: str,
+        product_context: str,
     ) -> ClassificationResult:
+        truncated_content = truncate_extracted_content(extracted_content)
         prompt = build_llm_company_classifier_prompt(
             domain,
             title,
-            extracted_content,
+            truncated_content,
+            product_context,
         )
         key = llm_cache_key(
             domain,
             title,
-            extracted_content,
+            truncated_content,
+            product_context,
             self.prompt_version,
         )
         cached_response = read_llm_cache(self.cache_dir, key)
-        if cached_response is None:
+        if cached_response is not None:
+            return self._parse_response(
+                cached_response,
+                extracted_content=truncated_content,
+            )
+        if self.on_miss == "raise":
             raise NotImplementedError("LLM provider not configured")
-        return self._parse_cached_response(
-            cached_response,
-            extracted_content=extracted_content,
-            prompt=prompt,
+        if key not in self._planned_keys:
+            self._planned_keys.add(key)
+            write_pending_prompt(self.cache_dir, key, prompt)
+            self._planned_calls += 1
+            self._total_prompt_characters += len(prompt)
+        return ClassificationResult(
+            role=SupplierRole.UNKNOWN,
+            confidence=Confidence.LOW,
+            citation="",
+            reasoning="CACHE_MISS_DRY_RUN",
         )
 
-    @staticmethod
-    def _parse_cached_response(
-        response: Mapping[str, object],
+    def _failure_result(self, reason: str) -> ClassificationResult:
+        self._failure_counts[reason] += 1
+        return ClassificationResult(
+            role=SupplierRole.UNKNOWN,
+            confidence=Confidence.LOW,
+            citation="",
+            reasoning=reason,
+        )
+
+    def _parse_response(
+        self,
+        response: object,
         *,
         extracted_content: str,
-        prompt: str,
     ) -> ClassificationResult:
-        del prompt
-        if set(response) != _CACHE_FIELDS:
-            raise ValueError("Cached LLM response must contain exactly four fields")
+        if response is _INVALID_CACHED_RESPONSE:
+            return self._failure_result("INVALID_RESPONSE")
+        if isinstance(response, str):
+            try:
+                response = json.loads(response)
+            except json.JSONDecodeError:
+                return self._failure_result("INVALID_RESPONSE")
+        if not isinstance(response, Mapping) or set(response) != _CACHE_FIELDS:
+            return self._failure_result("INVALID_RESPONSE")
         try:
-            role = CompanyClassification(response["role"])
+            role = SupplierRole(response["role"])
             confidence = Confidence(response["confidence"])
-        except (TypeError, ValueError) as error:
-            raise ValueError("Cached LLM response contains an unsupported enum") from error
+        except (TypeError, ValueError):
+            return self._failure_result("INVALID_RESPONSE")
         citation = response["citation"]
         reasoning = response["reasoning"]
         if not isinstance(citation, str) or not isinstance(reasoning, str):
-            raise ValueError("Cached LLM citation and reasoning must be text")
-        if citation and citation not in extracted_content:
-            raise ValueError("Cached LLM citation is not literal extracted content")
+            return self._failure_result("INVALID_RESPONSE")
+        if not citation.strip():
+            return self._failure_result("NO_CITATION")
+        normalized_citation = _normalized_whitespace(citation)
+        normalized_content = _normalized_whitespace(extracted_content)
+        if normalized_citation not in normalized_content:
+            return self._failure_result("CITATION_NOT_FOUND")
         return ClassificationResult(
             role=role,
             confidence=confidence,

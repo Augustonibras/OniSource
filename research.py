@@ -24,6 +24,13 @@ from src.search.adjudication import aggregate_adjudicated_evaluations
 from src.search.budget import SearchBudget
 from src.search.cache import CachedSearchProvider
 from src.search.cassette import CassetteSearchProvider
+from src.search.company_classifier import (
+    DEFAULT_LLM_CACHE_DIR,
+    LLM_FAILURE_REASONS,
+    MAX_CONTENT_CHARS,
+    PROMPT_VERSION,
+    LLMCompanyClassifier,
+)
 from src.search.company_evaluation import build_company_classification_report
 from src.search.coverage import build_ground_truth_coverage
 from src.search.extraction_selection import select_extraction_urls
@@ -44,11 +51,13 @@ PHASE_ZERO_CASES = (
         "case": "A",
         "product_name": "BILLIONS R996 Titanium Dioxide",
         "category": "titanium_dioxide",
+        "product_context": "titanium dioxide, rutile grade, CAS 13463-67-7",
     },
     {
         "case": "B",
         "product_name": "Phosphoric Acid",
         "category": "phosphoric_acid",
+        "product_context": "phosphoric acid, CAS 7664-38-2",
     },
 )
 
@@ -116,6 +125,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(1, 2),
         default=1,
         help="Select the isolated human adjudication set (default: 1)",
+    )
+    llm_dry_run_parser = subparsers.add_parser(
+        "llm-classifier-dry-run",
+        help="Estimate Phase 0 LLM classification inputs without provider calls",
+    )
+    llm_dry_run_parser.add_argument(
+        "--cache-dir",
+        default=str(DEFAULT_LLM_CACHE_DIR),
+        help="Write pending prompts below this ignored cache directory",
     )
     cassette_parser = subparsers.add_parser(
         "freeze-cassette", help="Freeze a reviewed live response"
@@ -481,6 +499,91 @@ def benchmark_payload(
     return payload
 
 
+def llm_classifier_dry_run_payload(
+    *,
+    cache_dir: str | Path = DEFAULT_LLM_CACHE_DIR,
+    extract_cassette_dir: str | Path = DEFAULT_EXTRACT_CASSETTE_DIR,
+) -> dict[str, Any]:
+    """Estimate cache-miss LLM inputs using only committed offline cassettes."""
+
+    search_provider = CassetteSearchProvider()
+    extract_path = Path(extract_cassette_dir)
+    if not extract_path.is_dir() or not any(extract_path.glob("*.json")):
+        raise FileNotFoundError("offline extraction cassettes are required")
+    extract_provider = CassetteExtractProvider(extract_path)
+    case_payloads: list[dict[str, object]] = []
+    total_calls = 0
+    total_characters = 0
+    total_failures = {reason: 0 for reason in LLM_FAILURE_REASONS}
+
+    for case in PHASE_ZERO_CASES:
+        category = case["category"]
+        queries = build_search_queries(
+            case["product_name"],
+            category,
+            category_config=load_search_category_config(category),
+        )
+        _, results = _execute_queries(search_provider, queries)
+        extracted_content, extraction = _extract_case_content(
+            results,
+            extract_provider,
+            provider_mode="cassette",
+        )
+        classifier = LLMCompanyClassifier(
+            None,
+            cache_dir,
+            on_miss="dry_run",
+        )
+        for result in results:
+            content = extracted_content.get(result.url)
+            if content is None:
+                continue
+            domain = (urlsplit(result.url).hostname or "UNKNOWN_DOMAIN").casefold()
+            classifier.classify(
+                domain,
+                result.title,
+                content,
+                case["product_context"],
+            )
+
+        metrics = classifier.execution_metrics
+        calls = int(metrics["provider_calls_planned"])
+        characters = int(metrics["total_prompt_characters"])
+        failure_counts = metrics["failure_counts"]
+        if not isinstance(failure_counts, dict):
+            raise TypeError("classifier failure_counts must be a mapping")
+        total_calls += calls
+        total_characters += characters
+        for reason in LLM_FAILURE_REASONS:
+            total_failures[reason] += int(failure_counts[reason])
+        case_payloads.append(
+            {
+                "case": case["case"],
+                "category": category,
+                "product_context": case["product_context"],
+                "extracted_urls": extraction["successful_urls"],
+                "provider_calls_planned": calls,
+                "total_prompt_characters": characters,
+                "estimated_input_tokens": characters / 4,
+                "failure_counts": failure_counts,
+            }
+        )
+
+    return {
+        "mode": "dry_run",
+        "provider_selected": False,
+        "network_calls_made": 0,
+        "prompt_version": PROMPT_VERSION,
+        "max_content_chars": MAX_CONTENT_CHARS,
+        "token_estimation_method": "characters / 4",
+        "cases": case_payloads,
+        "total_provider_calls_planned": total_calls,
+        "total_prompt_characters": total_characters,
+        "estimated_input_tokens": total_characters / 4,
+        "failure_counts": total_failures,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if callable(reconfigure):
@@ -518,6 +621,8 @@ def main(argv: list[str] | None = None) -> int:
             refresh_extract_cassettes=args.refresh_extract_cassettes,
             adjudication_sample=args.adjudication_sample,
         )
+    elif args.command == "llm-classifier-dry-run":
+        payload = llm_classifier_dry_run_payload(cache_dir=args.cache_dir)
     elif args.command == "freeze-cassette":
         cassette_path = freeze_run_as_cassette(
             args.run_response,

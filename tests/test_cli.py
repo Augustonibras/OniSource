@@ -8,6 +8,7 @@ from research import (
     benchmark_payload,
     build_parser,
     dry_run_search_payload,
+    llm_classifier_dry_run_payload,
     load_category,
     status_payload,
 )
@@ -224,6 +225,51 @@ def test_benchmark_accepts_isolated_validation_sample() -> None:
     args = parser.parse_args(["benchmark", "--adjudication-sample", "2"])
 
     assert args.adjudication_sample == 2
+
+
+def test_llm_classifier_dry_run_has_a_dedicated_command() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        ["llm-classifier-dry-run", "--cache-dir", "temporary-cache"]
+    )
+
+    assert args.command == "llm-classifier-dry-run"
+    assert args.cache_dir == "temporary-cache"
+
+
+def test_llm_classifier_dry_run_uses_only_offline_cassettes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import research
+
+    def reject_live_provider(*args, **kwargs):
+        raise AssertionError("LLM dry-run must not construct a live provider")
+
+    monkeypatch.setattr(research, "TavilySearchProvider", reject_live_provider)
+    monkeypatch.setattr(research, "TavilyExtractProvider", reject_live_provider)
+
+    payload = llm_classifier_dry_run_payload(cache_dir=tmp_path)
+
+    assert payload["mode"] == "dry_run"
+    assert payload["provider_selected"] is False
+    assert payload["network_calls_made"] == 0
+    assert payload["prompt_version"] == "v2"
+    assert payload["max_content_chars"] == 12_000
+    assert [case["case"] for case in payload["cases"]] == ["A", "B"]
+    assert payload["total_provider_calls_planned"] == sum(
+        case["provider_calls_planned"] for case in payload["cases"]
+    )
+    assert payload["total_prompt_characters"] == sum(
+        case["total_prompt_characters"] for case in payload["cases"]
+    )
+    assert payload["estimated_input_tokens"] == (
+        payload["total_prompt_characters"] / 4
+    )
+    assert len(list((tmp_path / "_pending").glob("*.prompt.txt"))) == payload[
+        "total_provider_calls_planned"
+    ]
 
 
 def test_phase_zero_benchmark_defaults_to_offline_cassettes(monkeypatch) -> None:

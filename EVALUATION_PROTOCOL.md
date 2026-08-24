@@ -235,3 +235,7 @@ O conjunto 2 é um conjunto de validação humana e não foi usado para escrever
 **Motivo do FAIL:** sinais como “catálogo amplo” e “venda de marca de terceiro” não separam fabricante de revendedor asiático que se autodeclara fabricante, e rebaixaram fabricantes reais como ICL Group, hxtio2 e mytio2. As regras de tipo de página também não distinguem de forma confiável site de empresa de portal de dados, notícia ou associação.
 
 **Decisão:** substituir o classificador por `LLMCompanyClassifier`, atrás de uma abstração `CompanyClassifier`. A implementação por regra fixa será preservada apenas para comparação.
+
+### Entrada avaliada do LLMCompanyClassifier
+
+O `extracted_content` é truncado deterministicamente nos primeiros 12.000 caracteres antes da montagem do prompt e antes do cálculo da chave de cache. Esse truncamento faz parte da entrada avaliada: conteúdo posterior ao limite não é apresentado ao classificador, não altera a chave de cache e não pode sustentar a classificação ou sua citação.

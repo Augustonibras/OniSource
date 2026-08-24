@@ -6,6 +6,8 @@ import pytest
 
 from src.models import CompanyClassification
 from src.search.company_classifier import (
+    LLM_FAILURE_REASONS,
+    MAX_CONTENT_CHARS,
     PROMPT_VERSION,
     ClassificationResult,
     CompanyClassifier,
@@ -13,12 +15,17 @@ from src.search.company_classifier import (
     LLMCompanyClassifier,
     LLMProvider,
     RuleBasedCompanyClassifier,
+    SupplierRole,
     build_llm_company_classifier_prompt,
     classify_with_citation_gate,
     llm_cache_key,
     read_llm_cache,
+    rule_role_to_supplier_role,
     write_llm_cache,
 )
+
+
+PRODUCT_CONTEXT = "titanium dioxide, rutile grade, CAS 13463-67-7"
 
 
 class _RejectingProvider(LLMProvider):
@@ -26,15 +33,18 @@ class _RejectingProvider(LLMProvider):
         raise AssertionError("the LLM provider must not be called")
 
 
-class _UncitedClassifier(CompanyClassifier):
+class _UncitedLLMClassifier(CompanyClassifier):
+    requires_citation = True
+
     def classify(
         self,
         domain: str,
         title: str,
         extracted_content: str,
+        product_context: str,
     ) -> ClassificationResult:
         return ClassificationResult(
-            role=CompanyClassification.VERIFIED_MANUFACTURER,
+            role=SupplierRole.MANUFACTURER,
             confidence=Confidence.HIGH,
             citation="",
             reasoning="Unsupported classifier output.",
@@ -43,53 +53,138 @@ class _UncitedClassifier(CompanyClassifier):
 
 def _cached_response(citation: str) -> dict[str, object]:
     return {
-        "role": "PROBABLE_MANUFACTURER",
+        "role": "MANUFACTURER",
         "confidence": "MEDIUM",
         "citation": citation,
         "reasoning": "The page explicitly describes own production.",
     }
 
 
-def test_consumer_forces_unknown_when_citation_is_empty() -> None:
-    result = classify_with_citation_gate(
-        _UncitedClassifier(),
+def _key(domain: str, title: str, content: str) -> str:
+    return llm_cache_key(
+        domain,
+        title,
+        content,
+        PRODUCT_CONTEXT,
+        PROMPT_VERSION,
+    )
+
+
+def test_supplier_role_matches_the_human_ground_truth_vocabulary() -> None:
+    assert [role.value for role in SupplierRole] == [
+        "MANUFACTURER",
+        "DISTRIBUTOR",
+        "TRADER",
+        "MARKETPLACE_OR_DIRECTORY",
+        "NOT_A_SUPPLIER",
+        "NOT_A_COMPANY",
+        "UNCERTAIN",
+        "UNKNOWN",
+    ]
+
+
+def test_fixed_rule_roles_are_mapped_explicitly_without_fallback_inference() -> None:
+    assert rule_role_to_supplier_role(
+        CompanyClassification.PROBABLE_MANUFACTURER
+    ) is SupplierRole.MANUFACTURER
+    assert rule_role_to_supplier_role(
+        CompanyClassification.VERIFIED_DISTRIBUTOR
+    ) is SupplierRole.DISTRIBUTOR
+    assert rule_role_to_supplier_role("MARKETPLACE") is (
+        SupplierRole.MARKETPLACE_OR_DIRECTORY
+    )
+    assert rule_role_to_supplier_role("NOT_A_COMPANY") is SupplierRole.NOT_A_COMPANY
+    assert rule_role_to_supplier_role("UNMAPPED_RULE_VALUE") is SupplierRole.UNKNOWN
+
+
+def test_citation_gate_applies_only_to_classifiers_that_require_it() -> None:
+    gated = classify_with_citation_gate(
+        _UncitedLLMClassifier(),
         "example.com",
         "Example",
         "Example content",
+        PRODUCT_CONTEXT,
     )
 
-    assert result.role is CompanyClassification.UNKNOWN
-    assert result.citation == ""
+    assert gated.role is SupplierRole.UNKNOWN
+    assert gated.reasoning == "NO_CITATION"
 
 
-def test_rule_based_adapter_preserves_rule_output_but_has_no_citation() -> None:
+def test_rule_based_adapter_keeps_its_prediction_without_a_citation_gate() -> None:
     classifier = RuleBasedCompanyClassifier()
     content = (
         "We manufacture titanium dioxide. "
         "Our production capacity is 100,000 tons per year."
     )
 
-    raw_result = classifier.classify("example.com", "Example", content)
+    raw_result = classifier.classify(
+        "example.com",
+        "Example",
+        content,
+        PRODUCT_CONTEXT,
+    )
     consumed_result = classify_with_citation_gate(
         classifier,
         "example.com",
         "Example",
         content,
+        PRODUCT_CONTEXT,
     )
 
-    assert raw_result.role is CompanyClassification.PROBABLE_MANUFACTURER
+    assert classifier.requires_citation is False
+    assert raw_result.role is SupplierRole.MANUFACTURER
     assert raw_result.citation == ""
-    assert consumed_result.role is CompanyClassification.UNKNOWN
+    assert consumed_result.role is SupplierRole.MANUFACTURER
 
 
 def test_llm_cache_helpers_round_trip_json(tmp_path: Path) -> None:
-    key = llm_cache_key("example.com", "Example", "Own production", PROMPT_VERSION)
+    key = _key("example.com", "Example", "Own production")
     response = _cached_response("Own production")
 
     path = write_llm_cache(tmp_path, key, response)
 
     assert path == tmp_path / f"{key}.json"
     assert read_llm_cache(tmp_path, key) == response
+
+
+def test_cache_key_changes_with_product_context() -> None:
+    first = llm_cache_key("example.com", "Example", "Content", "product A")
+    second = llm_cache_key("example.com", "Example", "Content", "product B")
+
+    assert first != second
+
+
+def test_cache_key_and_prompt_use_only_truncated_content() -> None:
+    common_prefix = "a" * MAX_CONTENT_CHARS
+    first = llm_cache_key(
+        "example.com",
+        "Example",
+        common_prefix + "FIRST_SUFFIX",
+        PRODUCT_CONTEXT,
+    )
+    second = llm_cache_key(
+        "example.com",
+        "Example",
+        common_prefix + "SECOND_SUFFIX",
+        PRODUCT_CONTEXT,
+    )
+    changed_within_limit = llm_cache_key(
+        "example.com",
+        "Example",
+        "b" + common_prefix[1:],
+        PRODUCT_CONTEXT,
+    )
+    prompt = build_llm_company_classifier_prompt(
+        "example.com",
+        "Example",
+        common_prefix + "FIRST_SUFFIX",
+        PRODUCT_CONTEXT,
+    )
+
+    assert first == second
+    assert first != changed_within_limit
+    assert "FIRST_SUFFIX" not in prompt
+    assert prompt.endswith(common_prefix + "\n")
 
 
 def test_llm_classifier_cache_hit_is_parsed_without_provider_call(
@@ -99,51 +194,181 @@ def test_llm_classifier_cache_hit_is_parsed_without_provider_call(
     title = "Example producer"
     content = "We operate our own production plant in Example City."
     citation = "our own production plant"
-    key = llm_cache_key(domain, title, content, PROMPT_VERSION)
-    write_llm_cache(tmp_path, key, _cached_response(citation))
+    write_llm_cache(tmp_path, _key(domain, title, content), _cached_response(citation))
     classifier = LLMCompanyClassifier(_RejectingProvider(), tmp_path)
 
-    result = classifier.classify(domain, title, content)
+    result = classifier.classify(domain, title, content, PRODUCT_CONTEXT)
 
     assert result == ClassificationResult(
-        role=CompanyClassification.PROBABLE_MANUFACTURER,
+        role=SupplierRole.MANUFACTURER,
         confidence=Confidence.MEDIUM,
         citation=citation,
         reasoning="The page explicitly describes own production.",
     )
+    assert classifier.execution_metrics["failure_counts"] == {
+        reason: 0 for reason in LLM_FAILURE_REASONS
+    }
 
 
-def test_llm_classifier_cache_miss_is_explicit_and_offline(tmp_path: Path) -> None:
+def test_citation_comparison_normalizes_whitespace(tmp_path: Path) -> None:
+    domain = "example.com"
+    title = "Example producer"
+    content = "We operate\nour   own production plant\tin Example City."
+    citation = "our own production plant in Example City."
+    write_llm_cache(tmp_path, _key(domain, title, content), _cached_response(citation))
     classifier = LLMCompanyClassifier(_RejectingProvider(), tmp_path)
 
+    result = classifier.classify(domain, title, content, PRODUCT_CONTEXT)
+
+    assert result.role is SupplierRole.MANUFACTURER
+    assert result.citation == citation
+
+
+def test_empty_citation_becomes_unknown_and_is_counted(tmp_path: Path) -> None:
+    domain = "example.com"
+    title = "Example"
+    content = "No role evidence."
+    write_llm_cache(tmp_path, _key(domain, title, content), _cached_response(""))
+    classifier = LLMCompanyClassifier(_RejectingProvider(), tmp_path)
+
+    result = classifier.classify(domain, title, content, PRODUCT_CONTEXT)
+
+    assert result.role is SupplierRole.UNKNOWN
+    assert result.reasoning == "NO_CITATION"
+    assert classifier.execution_metrics["failure_counts"]["NO_CITATION"] == 1
+
+
+def test_missing_citation_text_becomes_unknown_and_is_counted(tmp_path: Path) -> None:
+    domain = "example.com"
+    title = "Example"
+    content = "The page contains no production statement."
+    write_llm_cache(
+        tmp_path,
+        _key(domain, title, content),
+        _cached_response("Invented production claim"),
+    )
+    classifier = LLMCompanyClassifier(_RejectingProvider(), tmp_path)
+
+    result = classifier.classify(domain, title, content, PRODUCT_CONTEXT)
+
+    assert result.role is SupplierRole.UNKNOWN
+    assert result.reasoning == "CITATION_NOT_FOUND"
+    assert classifier.execution_metrics["failure_counts"]["CITATION_NOT_FOUND"] == 1
+
+
+@pytest.mark.parametrize(
+    ("response", "raw_malformed_json"),
+    [
+        ({"role": "MANUFACTURER"}, False),
+        (
+            {
+                "role": "UNSUPPORTED_ROLE",
+                "confidence": "HIGH",
+                "citation": "Evidence",
+                "reasoning": "Reason",
+            },
+            False,
+        ),
+        (None, True),
+    ],
+    ids=("missing-field", "unknown-enum", "invalid-json"),
+)
+def test_invalid_responses_become_unknown_and_are_counted(
+    tmp_path: Path,
+    response: object,
+    raw_malformed_json: bool,
+) -> None:
+    domain = "example.com"
+    title = "Example"
+    content = "Evidence"
+    key = _key(domain, title, content)
+    if raw_malformed_json:
+        (tmp_path / f"{key}.json").write_text("{invalid", encoding="utf-8")
+    else:
+        write_llm_cache(tmp_path, key, response)
+    classifier = LLMCompanyClassifier(_RejectingProvider(), tmp_path)
+
+    result = classifier.classify(domain, title, content, PRODUCT_CONTEXT)
+
+    assert result.role is SupplierRole.UNKNOWN
+    assert result.reasoning == "INVALID_RESPONSE"
+    assert classifier.execution_metrics["failure_counts"]["INVALID_RESPONSE"] == 1
+
+
+def test_llm_classifier_cache_miss_raise_stays_explicit_and_offline(
+    tmp_path: Path,
+) -> None:
+    classifier = LLMCompanyClassifier(
+        _RejectingProvider(),
+        tmp_path,
+        on_miss="raise",
+    )
+
     with pytest.raises(NotImplementedError, match="LLM provider not configured"):
-        classifier.classify("missing.example", "Missing", "No cached response")
+        classifier.classify(
+            "missing.example",
+            "Missing",
+            "No cached response",
+            PRODUCT_CONTEXT,
+        )
 
     assert list(tmp_path.iterdir()) == []
 
 
-def test_cached_citation_must_be_literal_extracted_content(tmp_path: Path) -> None:
-    domain = "example.com"
-    title = "Example"
-    content = "The page contains no production statement."
-    key = llm_cache_key(domain, title, content, PROMPT_VERSION)
-    write_llm_cache(tmp_path, key, _cached_response("Invented production claim"))
-    classifier = LLMCompanyClassifier(_RejectingProvider(), tmp_path)
+def test_llm_classifier_dry_run_writes_pending_prompt_and_counts_unique_call(
+    tmp_path: Path,
+) -> None:
+    classifier = LLMCompanyClassifier(
+        _RejectingProvider(),
+        tmp_path,
+        on_miss="dry_run",
+    )
 
-    with pytest.raises(ValueError, match="not literal extracted content"):
-        classifier.classify(domain, title, content)
+    first = classifier.classify(
+        "example.com",
+        "Example",
+        "Extracted evidence",
+        PRODUCT_CONTEXT,
+    )
+    second = classifier.classify(
+        "example.com",
+        "Example",
+        "Extracted evidence",
+        PRODUCT_CONTEXT,
+    )
+    pending = list((tmp_path / "_pending").glob("*.prompt.txt"))
+    prompt = pending[0].read_text(encoding="utf-8")
+
+    assert first.role is SupplierRole.UNKNOWN
+    assert first.reasoning == "CACHE_MISS_DRY_RUN"
+    assert second == first
+    assert len(pending) == 1
+    assert PRODUCT_CONTEXT in prompt
+    assert classifier.execution_metrics == {
+        "provider_calls_planned": 1,
+        "total_prompt_characters": len(prompt),
+        "estimated_input_tokens": len(prompt) / 4,
+        "token_estimation_method": "characters / 4",
+        "failure_counts": {reason: 0 for reason in LLM_FAILURE_REASONS},
+    }
 
 
-def test_prompt_requires_strict_json_and_literal_citation() -> None:
+def test_prompt_uses_human_taxonomy_product_context_and_strict_json() -> None:
     prompt = build_llm_company_classifier_prompt(
         "example.com",
         "Example",
         "Extracted evidence",
+        PRODUCT_CONTEXT,
     )
 
+    for role in SupplierRole:
+        assert f"- {role.value}:" in prompt
+    assert PRODUCT_CONTEXT in prompt
+    assert "always be relative to product_context" in prompt
     assert '"role":"UNKNOWN"' in prompt
     assert '"confidence":"LOW"' in prompt
     assert '"citation":""' in prompt
     assert '"reasoning":"short evidence-based reason"' in prompt
-    assert "literal, contiguous excerpt copied exactly from extracted_content" in prompt
-    assert PROMPT_VERSION == "v1"
+    assert "whitespace may be normalized" in prompt
+    assert MAX_CONTENT_CHARS == 12_000
+    assert PROMPT_VERSION == "v2"
