@@ -726,6 +726,7 @@ def build_company_classification_report(
     results: Iterable[SearchResult],
     *,
     extracted_content_by_url: Mapping[str, str] | None = None,
+    adjudication_sample: int = 1,
 ) -> dict[str, object]:
     """Classify cassette search evidence, then compare it with human labels."""
 
@@ -975,6 +976,7 @@ def build_company_classification_report(
         "adjudicated_results_evaluation": evaluate_adjudicated_results(
             category,
             result_rows,
+            sample=adjudication_sample,
         ),
         "ground_truth_comparison": {
             "summary": {

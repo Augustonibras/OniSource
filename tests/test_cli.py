@@ -218,6 +218,14 @@ def test_benchmark_has_separate_explicit_live_extract_flag() -> None:
     assert extract_live.refresh_extract_cassettes is True
 
 
+def test_benchmark_accepts_isolated_validation_sample() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(["benchmark", "--adjudication-sample", "2"])
+
+    assert args.adjudication_sample == 2
+
+
 def test_phase_zero_benchmark_defaults_to_offline_cassettes(monkeypatch) -> None:
     import research
 

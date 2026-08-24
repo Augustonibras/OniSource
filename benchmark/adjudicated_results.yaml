@@ -2,6 +2,7 @@ version: 1
 source: "HUMAN"
 cases:
   A:
+    sample: 1
     category: "titanium_dioxide"
     results:
       brandessenceresearch.com:
@@ -65,6 +66,7 @@ cases:
         url: "https://www.veritradecorp.com/en/peru/imports-and-exports-omya-peru-sac/ruc-20608572067"
         human_label: "MARKETPLACE_OR_DIRECTORY"
   B:
+    sample: 1
     category: "phosphoric_acid"
     results:
       corecheminc.com:
@@ -127,3 +129,155 @@ cases:
       www.vizagchemical.com:
         url: "http://www.vizagchemical.com/blog/phosphoric-acid-distributors-manufacturers-exporters-and-suppliers-india"
         human_label: "MARKETPLACE_OR_DIRECTORY"
+validation:
+  sample: 2
+  purpose: "VALIDATION"
+  cases:
+    A:
+      category: "titanium_dioxide"
+      results:
+        b2bdata.aipage.com:
+          human_label: "MARKETPLACE_OR_DIRECTORY"
+          urls:
+            - "https://b2bdata.aipage.com/en/rank/k/all-area/titanium-dioxide"
+        camaltd.com:
+          human_label: "TRADER"
+          urls:
+            - "https://camaltd.com/top-10-titanium-dioxide-manufacturers-china"
+        ereztech.com:
+          human_label: "MANUFACTURER"
+          urls:
+            - "https://ereztech.com/product/titanium-iv-oxide-1317-80-2"
+        www.achilleschem.com:
+          human_label: "UNCERTAIN"
+          urls:
+            - "https://www.achilleschem.com/titanium-dioxide.html"
+        www.additivesforpolymer.com:
+          human_label: "MARKETPLACE_OR_DIRECTORY"
+          urls:
+            - "https://www.additivesforpolymer.com/wp-content/uploads/2023/05/LB-GROUP-LOMON-Billions-R-996-titanium-dioxide-tds.pdf"
+        www.apctj.com:
+          human_label: "UNCERTAIN"
+          urls:
+            - "https://www.apctj.com/titanium-dioxide-for-soap-for-paper-coatings"
+        www.chuangegroup.com:
+          human_label: "TRADER"
+          urls:
+            - "https://www.chuangegroup.com/dp-rutile-titanium-dioxide-blr699-billions-brand-k5117682.html"
+        www.cqtitaniumdioxide.com:
+          human_label: "TRADER"
+          urls:
+            - "https://www.cqtitaniumdioxide.com/news/titaniumdioxidelomonr-996manufacturers.html"
+        www.embravision.com:
+          human_label: "TRADER"
+          urls:
+            - "https://www.embravision.com/en/products/titanium-dioxide"
+        www.intercroma.com:
+          human_label: "DISTRIBUTOR"
+          urls:
+            - "https://www.intercroma.com/en/post/for-the-eighth-time-we-are-among-the-best-distributors-of-titanium-dioxide-in-brazil"
+        www.jinhetec.com:
+          human_label: "TRADER"
+          urls:
+            - "https://www.jinhetec.com/dp-billions-titanium-dioxide-blr895.html"
+            - "https://www.jinhetec.com/dp-export-r996-tio2-to-brazil-k3647602.html"
+            - "https://www.jinhetec.com/titanium-dioxide/62942386.html"
+            - "https://www.jinhetec.com/titanium-dioxide/60592881.html"
+            - "https://www.jinhetec.com/dp-titanium-dioxide-equivalent-to-tio2-cr828.html"
+            - "https://www.jinhetec.com/dp-titanium-dioxide-longbai-r996-k3636985.html"
+        www.mheavytechnology.com:
+          human_label: "NOT_A_SUPPLIER"
+          urls:
+            - "https://www.mheavytechnology.com/news/tio2-titanium-dioxide-production"
+        www.peijinchem.com:
+          human_label: "TRADER"
+          urls:
+            - "https://www.peijinchem.com/titanium-dioxide/rutile-titanium-dioxide-lomon-billions-r-996.html"
+        www.samaterials.com:
+          human_label: "DISTRIBUTOR"
+          urls:
+            - "https://www.samaterials.com/nano-titanium-dioxide-powder-rutile.html"
+            - "https://www.samaterials.com/micro-nano-materials/287-nano-titanium-oxide.html"
+    B:
+      category: "phosphoric_acid"
+      results:
+        alliancechemical.com:
+          human_label: "DISTRIBUTOR"
+          urls:
+            - "https://alliancechemical.com/collections/phosphoric-acids"
+        dgchemtech.com:
+          human_label: "NOT_A_SUPPLIER"
+          urls:
+            - "https://dgchemtech.com/phosphoric-acid.html"
+        en.cjnphos.com:
+          human_label: "MANUFACTURER"
+          urls:
+            - "https://en.cjnphos.com/m.develop/innovate.html"
+        finetechitg.com:
+          human_label: "TRADER"
+          urls:
+            - "https://finetechitg.com/top-10-phosphoric-acid-companies-in-china"
+        htmcgroup.com:
+          human_label: "DISTRIBUTOR"
+          urls:
+            - "https://htmcgroup.com/phosphoric-acid"
+        vinipulchemicals.com:
+          human_label: "TRADER"
+          urls:
+            - "https://vinipulchemicals.com/phosphoric-acid-vietnam-supplier"
+        www.bofanchem.com:
+          human_label: "TRADER"
+          urls:
+            - "https://www.bofanchem.com/blog/top-10-acids-factory-in-china-1681805.html"
+        www.businesswire.com:
+          human_label: "NOT_A_COMPANY"
+          urls:
+            - "https://www.businesswire.com/news/home/20231206069050/en/Phosphoric-acid-CAS-7664-38-2-Global-Market-Research-Report-2023---ResearchAndMarkets.com"
+        www.chemanalyst.com:
+          human_label: "NOT_A_COMPANY"
+          urls:
+            - "https://www.chemanalyst.com/Blogs/understanding-the-production-process-of-phosphoric-acid-16"
+        www.dcceew.gov.au:
+          human_label: "NOT_A_COMPANY"
+          urls:
+            - "https://www.dcceew.gov.au/environment/protection/npi/substances/phosphoric-acid"
+        www.fertilizer.org:
+          human_label: "NOT_A_COMPANY"
+          urls:
+            - "https://www.fertilizer.org/wp-content/uploads/2023/01/2004_tech_beijing_smith.pdf"
+        www.fortunebusinessinsights.com:
+          human_label: "NOT_A_COMPANY"
+          urls:
+            - "https://www.fortunebusinessinsights.com/phosphoric-acid-market-104571"
+        www.gpcchem.com:
+          human_label: "TRADER"
+          urls:
+            - "https://www.gpcchem.com/inorganic/phosphoric-acid.html"
+        www.grandviewresearch.com:
+          human_label: "NOT_A_COMPANY"
+          urls:
+            - "https://www.grandviewresearch.com/industry-analysis/phosphoric-acid-market"
+        www.hydrite.com:
+          human_label: "DISTRIBUTOR"
+          urls:
+            - "https://www.hydrite.com/Product/industrial/Phosphoric-Acid.htm"
+        www.kenresearch.com:
+          human_label: "NOT_A_COMPANY"
+          urls:
+            - "https://www.kenresearch.com/global-phosphoric-acid-market"
+        www.naqglobal.com:
+          human_label: "NOT_A_SUPPLIER"
+          urls:
+            - "https://www.naqglobal.com/phos-acid-plant"
+        www.silverfernchemical.com:
+          human_label: "DISTRIBUTOR"
+          urls:
+            - "https://www.silverfernchemical.com/chemical-supplier-7664-38-2/phosphoric-acid-distributor-118.aspx"
+        www.thegoodscentscompany.com:
+          human_label: "MARKETPLACE_OR_DIRECTORY"
+          urls:
+            - "https://www.thegoodscentscompany.com/data/rw1033561.html"
+        www.tnjchem.com:
+          human_label: "TRADER"
+          urls:
+            - "https://www.tnjchem.com/buy-phosphoric-acid-at-factory-price-from-china-supplier_p2386.html"

@@ -36,6 +36,7 @@ def test_human_adjudication_loads_twenty_results_per_case() -> None:
     assert len(case_b) == 20
     assert {item.case for item in case_a} == {"A"}
     assert {item.case for item in case_b} == {"B"}
+    assert {item.sample for item in case_a + case_b} == {1}
     assert next(
         item.human_label
         for item in case_a
@@ -46,6 +47,42 @@ def test_human_adjudication_loads_twenty_results_per_case() -> None:
         for item in case_b
         if item.domain == "www.icl-group.com"
     ) == "MANUFACTURER"
+
+
+def test_validation_sample_loads_twenty_rows_per_case_by_domain_label() -> None:
+    case_a = load_adjudicated_results("titanium_dioxide", sample=2)
+    case_b = load_adjudicated_results("phosphoric_acid", sample=2)
+
+    assert len(case_a) == 20
+    assert len(case_b) == 20
+    assert {item.sample for item in case_a + case_b} == {2}
+    assert len({item.domain for item in case_a}) == 14
+    assert len({item.domain for item in case_b}) == 20
+    assert {
+        item.human_label for item in case_a if item.domain == "www.jinhetec.com"
+    } == {"TRADER"}
+    assert sum(item.domain == "www.jinhetec.com" for item in case_a) == 6
+
+
+def test_validation_evaluation_is_isolated_from_sample_one() -> None:
+    validation = load_adjudicated_results("titanium_dioxide", sample=2)
+    ereztech = next(item for item in validation if item.domain == "ereztech.com")
+
+    evaluation = evaluate_adjudicated_results(
+        "titanium_dioxide",
+        [_row(ereztech.url, "UNKNOWN")],
+        sample=2,
+    )
+
+    assert evaluation["sample"] == 2
+    assert evaluation["adjudicated"] == 20
+    assert evaluation["matched"] == 1
+    assert evaluation["recall_by_role"]["MANUFACTURER"] == {
+        "correct": 0,
+        "human_total": 1,
+        "false_negatives": 1,
+        "recall_percentage": 0.0,
+    }
 
 
 def test_precision_is_calculated_over_predictions_for_each_role() -> None:

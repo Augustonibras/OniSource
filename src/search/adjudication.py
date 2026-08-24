@@ -41,6 +41,7 @@ class AdjudicationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class AdjudicatedResult:
+    sample: int
     case: str
     category: str
     domain: str
@@ -58,13 +59,32 @@ def _normalized_domain(value: str) -> str:
     return value.strip().casefold().rstrip(".")
 
 
-def load_adjudicated_results(category: str) -> tuple[AdjudicatedResult, ...]:
+def _cases_for_sample(payload: Mapping[str, object], sample: int) -> Mapping[str, object]:
+    if sample == 1:
+        raw_cases = payload.get("cases")
+    else:
+        validation = payload.get("validation")
+        if not isinstance(validation, Mapping) or validation.get("sample") != sample:
+            raise AdjudicationError(f"adjudication sample {sample} is not defined")
+        if validation.get("purpose") != "VALIDATION":
+            raise AdjudicationError(
+                f"adjudication sample {sample} must be marked VALIDATION"
+            )
+        raw_cases = validation.get("cases")
+    if not isinstance(raw_cases, Mapping):
+        raise AdjudicationError("adjudication cases must be a mapping")
+    return raw_cases
+
+
+def load_adjudicated_results(
+    category: str,
+    *,
+    sample: int = 1,
+) -> tuple[AdjudicatedResult, ...]:
     payload = load_yaml_mapping(ADJUDICATED_RESULTS_PATH)
     if payload.get("version") != 1 or payload.get("source") != "HUMAN":
         raise AdjudicationError("adjudication metadata must be version 1 and HUMAN")
-    raw_cases = payload.get("cases")
-    if not isinstance(raw_cases, dict):
-        raise AdjudicationError("adjudication cases must be a mapping")
+    raw_cases = _cases_for_sample(payload, sample)
 
     normalized_category = "_".join(category.casefold().replace("_", " ").split())
     loaded: list[AdjudicatedResult] = []
@@ -73,6 +93,8 @@ def load_adjudicated_results(category: str) -> tuple[AdjudicatedResult, ...]:
         case = _required_text(raw_case, field_name="case")
         if not isinstance(raw_case_payload, dict):
             raise AdjudicationError(f"adjudication case {case} must be a mapping")
+        if sample == 1 and raw_case_payload.get("sample") != 1:
+            raise AdjudicationError(f"adjudication case {case} must be sample 1")
         case_category = _required_text(
             raw_case_payload.get("category"),
             field_name=f"case {case} category",
@@ -92,14 +114,6 @@ def load_adjudicated_results(category: str) -> tuple[AdjudicatedResult, ...]:
                 raise AdjudicationError(
                     f"adjudication result {domain} must be a mapping"
                 )
-            url = _required_text(
-                raw_result.get("url"), field_name=f"{domain} url"
-            )
-            returned_domain = _normalized_domain(urlsplit(url).hostname or "")
-            if returned_domain != domain:
-                raise AdjudicationError(
-                    f"adjudication domain does not match URL: {domain}"
-                )
             human_label = _required_text(
                 raw_result.get("human_label"),
                 field_name=f"{domain} human_label",
@@ -108,18 +122,33 @@ def load_adjudicated_results(category: str) -> tuple[AdjudicatedResult, ...]:
                 raise AdjudicationError(
                     f"unsupported human adjudication label: {human_label}"
                 )
-            if url in seen_urls:
-                raise AdjudicationError(f"duplicate adjudicated URL: {url}")
-            seen_urls.add(url)
-            loaded.append(
-                AdjudicatedResult(
-                    case=case,
-                    category=case_category,
-                    domain=domain,
-                    url=url,
-                    human_label=human_label,
-                )
+            raw_urls = (
+                [raw_result.get("url")]
+                if sample == 1
+                else raw_result.get("urls")
             )
+            if not isinstance(raw_urls, list) or not raw_urls:
+                raise AdjudicationError(f"adjudication {domain} urls must be a list")
+            for raw_url in raw_urls:
+                url = _required_text(raw_url, field_name=f"{domain} url")
+                returned_domain = _normalized_domain(urlsplit(url).hostname or "")
+                if returned_domain != domain:
+                    raise AdjudicationError(
+                        f"adjudication domain does not match URL: {domain}"
+                    )
+                if url in seen_urls:
+                    raise AdjudicationError(f"duplicate adjudicated URL: {url}")
+                seen_urls.add(url)
+                loaded.append(
+                    AdjudicatedResult(
+                        sample=sample,
+                        case=case,
+                        category=case_category,
+                        domain=domain,
+                        url=url,
+                        human_label=human_label,
+                    )
+                )
     return tuple(loaded)
 
 
@@ -244,10 +273,12 @@ def _evaluation_metrics(
 def evaluate_adjudicated_results(
     category: str,
     result_rows: Iterable[Mapping[str, object]],
+    *,
+    sample: int = 1,
 ) -> dict[str, object]:
     """Measure predictions against human result labels without feeding labels back."""
 
-    adjudicated = load_adjudicated_results(category)
+    adjudicated = load_adjudicated_results(category, sample=sample)
     indexed: dict[str, Mapping[str, object]] = {}
     for row in result_rows:
         raw_url = row.get("url")
@@ -300,6 +331,7 @@ def evaluate_adjudicated_results(
 
     return {
         "scope": "HUMAN_ADJUDICATED_RESULTS",
+        "sample": sample,
         "adjudicated": len(adjudicated),
         "matched": len(adjudicated) - missing,
         "missing": missing,

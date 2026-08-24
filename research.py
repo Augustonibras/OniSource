@@ -110,6 +110,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Deliberately replace Phase 0 extraction cassettes",
     )
+    benchmark_parser.add_argument(
+        "--adjudication-sample",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="Select the isolated human adjudication set (default: 1)",
+    )
     cassette_parser = subparsers.add_parser(
         "freeze-cassette", help="Freeze a reviewed live response"
     )
@@ -344,6 +351,7 @@ def benchmark_payload(
     live_extract: bool = False,
     refresh_extract_cassettes: bool = False,
     extract_cassette_dir: str | Path = DEFAULT_EXTRACT_CASSETTE_DIR,
+    adjudication_sample: int = 1,
 ) -> dict[str, Any]:
     if refresh_cassettes and not live:
         raise ValueError("refresh_cassettes requires live=True")
@@ -428,6 +436,7 @@ def benchmark_payload(
                     category,
                     results,
                     extracted_content_by_url=extracted_content,
+                    adjudication_sample=adjudication_sample,
                 ),
                 "extraction": extraction,
             }
@@ -442,6 +451,7 @@ def benchmark_payload(
         "provider_mode": "live" if live else "cassette",
         "extract_provider_mode": extract_provider_mode,
         "query_set_version": QUERY_SET_VERSION,
+        "adjudication_sample": adjudication_sample,
         "cases": case_payloads,
         "adjudicated_precision_by_role": combined_adjudication[
             "precision_by_role"
@@ -506,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
             refresh_cassettes=args.refresh_cassettes,
             live_extract=args.live_extract,
             refresh_extract_cassettes=args.refresh_extract_cassettes,
+            adjudication_sample=args.adjudication_sample,
         )
     elif args.command == "freeze-cassette":
         cassette_path = freeze_run_as_cassette(
