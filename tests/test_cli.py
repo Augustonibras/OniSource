@@ -275,8 +275,8 @@ def test_llm_classifier_dry_run_uses_only_offline_cassettes(
     assert payload["adjudicated_only"] is False
     assert payload["provider_selected"] is False
     assert payload["network_calls_made"] == 0
-    assert payload["prompt_version"] == "v2"
-    assert payload["max_content_chars"] == 12_000
+    assert payload["prompt_version"] == "v3"
+    assert payload["max_content_chars"] == 40_000
     assert [case["case"] for case in payload["cases"]] == ["A", "B"]
     assert all(
         case["unique_domains"] == len(case["domain_pages"])
@@ -288,6 +288,20 @@ def test_llm_classifier_dry_run_uses_only_offline_cassettes(
     )
     assert all(
         len(case["content_size_diagnostics"]["largest_domains"]) <= 5
+        for case in payload["cases"]
+    )
+    assert all(
+        case["evidence_truncated_count"]
+        == sum(item["evidence_truncated"] for item in case["domain_pages"])
+        for case in payload["cases"]
+    )
+    assert all(
+        case["evidence_truncated_domains"]
+        == [
+            item["domain"]
+            for item in case["domain_pages"]
+            if item["evidence_truncated"]
+        ]
         for case in payload["cases"]
     )
     assert payload["total_provider_calls_planned"] == sum(
@@ -329,6 +343,20 @@ def test_adjudicated_only_dry_run_reports_found_and_absent_labeled_domains(
         assert set(found).isdisjoint(absent)
         assert case["unique_domains"] == len(found)
         assert case["provider_calls_planned"] == len(found)
+        diagnosis = adjudication["absent_domain_diagnosis"]
+        assert sum(diagnosis["counts"].values()) == len(absent)
+        assert set(diagnosis["domains"]) == {
+            "NOT_IN_SEARCH_RESULTS",
+            "IN_SEARCH_NOT_EXTRACTED",
+            "EXTRACTION_FAILED",
+        }
+
+    case_b_diagnosis = payload["cases"][1]["adjudication"][
+        "absent_domain_diagnosis"
+    ]
+    assert {
+        item["domain"] for item in case_b_diagnosis["domains"]["EXTRACTION_FAILED"]
+    } == {"www.grandviewresearch.com"}
 
 
 def test_llm_dry_run_prices_must_be_supplied_together(tmp_path) -> None:

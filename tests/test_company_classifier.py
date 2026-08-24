@@ -6,10 +6,12 @@ import pytest
 
 from src.models import CompanyClassification
 from src.search.company_classifier import (
+    CONTENT_BUDGET_POLICY,
     LLM_FAILURE_REASONS,
     MAX_CONTENT_CHARS,
     PAGE_BREAK,
     PROMPT_VERSION,
+    TRUNCATED_MARKER,
     ClassificationResult,
     CompanyClassifier,
     Confidence,
@@ -17,6 +19,7 @@ from src.search.company_classifier import (
     LLMProvider,
     RuleBasedCompanyClassifier,
     SupplierRole,
+    budget_extracted_content,
     build_llm_company_classifier_prompt,
     classify_with_citation_gate,
     group_extracted_pages_by_domain,
@@ -131,6 +134,14 @@ def test_extracted_pages_are_grouped_once_per_domain_in_result_order() -> None:
             www_url: "WWW page content",
         },
     )
+    grouped_with_reversed_mapping = group_extracted_pages_by_domain(
+        results,
+        {
+            www_url: "WWW page content",
+            second_url: "Second page content",
+            first_url: "First page content",
+        },
+    )
 
     assert [item.domain for item in grouped] == [
         "en.example.com",
@@ -143,6 +154,35 @@ def test_extracted_pages_are_grouped_once_per_domain_in_result_order() -> None:
         f"First page content{PAGE_BREAK}Second page content"
     )
     assert grouped[1].page_count == 1
+    assert grouped_with_reversed_mapping == grouped
+
+
+def test_per_page_budget_redistributes_unused_quota_in_successive_passes() -> None:
+    first = "A" * 50_000
+    second = "B" * 30_000
+    short = "C" * 1_000
+
+    budgeted = budget_extracted_content(
+        PAGE_BREAK.join((first, second, short))
+    )
+    pages = budgeted.content.split(PAGE_BREAK)
+
+    assert budgeted.page_allocations == (19_500, 19_500, 1_000)
+    assert budgeted.evidence_truncated is True
+    assert pages[0] == first[:19_500] + TRUNCATED_MARKER
+    assert pages[1] == second[:19_500] + TRUNCATED_MARKER
+    assert pages[2] == short
+
+
+def test_short_page_returns_its_quota_without_unnecessary_truncation() -> None:
+    first = "A" * 30_000
+    short = "B" * 1_000
+
+    budgeted = budget_extracted_content(PAGE_BREAK.join((first, short)))
+
+    assert budgeted.page_allocations == (30_000, 1_000)
+    assert budgeted.evidence_truncated is False
+    assert budgeted.content == PAGE_BREAK.join((first, short))
 
 
 def test_fixed_rule_roles_are_mapped_explicitly_without_fallback_inference() -> None:
@@ -246,7 +286,44 @@ def test_cache_key_and_prompt_use_only_truncated_content() -> None:
     assert first == second
     assert first != changed_within_limit
     assert "FIRST_SUFFIX" not in prompt
-    assert prompt.endswith(common_prefix + "\n")
+    assert prompt.endswith(common_prefix + TRUNCATED_MARKER + "\n")
+
+
+def test_cache_key_contains_limit_and_budget_policy(monkeypatch) -> None:
+    import src.search.company_classifier as classifier_module
+
+    baseline = llm_cache_key(
+        "example.com",
+        "Example",
+        "Content",
+        PRODUCT_CONTEXT,
+    )
+    monkeypatch.setattr(
+        classifier_module,
+        "CONTENT_BUDGET_POLICY",
+        "different_policy",
+    )
+    policy_changed = llm_cache_key(
+        "example.com",
+        "Example",
+        "Content",
+        PRODUCT_CONTEXT,
+    )
+    monkeypatch.setattr(
+        classifier_module,
+        "CONTENT_BUDGET_POLICY",
+        CONTENT_BUDGET_POLICY,
+    )
+    monkeypatch.setattr(classifier_module, "MAX_CONTENT_CHARS", 39_999)
+    limit_changed = llm_cache_key(
+        "example.com",
+        "Example",
+        "Content",
+        PRODUCT_CONTEXT,
+    )
+
+    assert policy_changed != baseline
+    assert limit_changed != baseline
 
 
 def test_llm_classifier_cache_hit_is_parsed_without_provider_call(
@@ -266,6 +343,7 @@ def test_llm_classifier_cache_hit_is_parsed_without_provider_call(
         confidence=Confidence.MEDIUM,
         citation=citation,
         reasoning="The page explicitly describes own production.",
+        evidence_truncated=False,
     )
     assert classifier.execution_metrics["failure_counts"] == {
         reason: 0 for reason in LLM_FAILURE_REASONS
@@ -403,6 +481,7 @@ def test_llm_classifier_dry_run_writes_pending_prompt_and_counts_unique_call(
 
     assert first.role is SupplierRole.UNKNOWN
     assert first.reasoning == "CACHE_MISS_DRY_RUN"
+    assert first.evidence_truncated is False
     assert second == first
     assert len(pending) == 1
     assert PRODUCT_CONTEXT in prompt
@@ -432,5 +511,6 @@ def test_prompt_uses_human_taxonomy_product_context_and_strict_json() -> None:
     assert '"citation":""' in prompt
     assert '"reasoning":"short evidence-based reason"' in prompt
     assert "whitespace may be normalized" in prompt
-    assert MAX_CONTENT_CHARS == 12_000
-    assert PROMPT_VERSION == "v2"
+    assert MAX_CONTENT_CHARS == 40_000
+    assert CONTENT_BUDGET_POLICY == "per_page_equal_quota_redistribute_v1"
+    assert PROMPT_VERSION == "v3"

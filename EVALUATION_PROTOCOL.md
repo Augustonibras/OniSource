@@ -238,4 +238,4 @@ O conjunto 2 é um conjunto de validação humana e não foi usado para escrever
 
 ### Entrada avaliada do LLMCompanyClassifier
 
-O `extracted_content` é truncado deterministicamente nos primeiros 12.000 caracteres antes da montagem do prompt e antes do cálculo da chave de cache. Esse truncamento faz parte da entrada avaliada: conteúdo posterior ao limite não é apresentado ao classificador, não altera a chave de cache e não pode sustentar a classificação ou sua citação.
+O `extracted_content` agregado por domínio recebe um orçamento determinístico de 40.000 caracteres antes da montagem do prompt e antes do cálculo da chave de cache. Cada página recebe inicialmente uma cota de `40.000 // número_de_páginas`; páginas abaixo da cota devolvem a sobra, que é redistribuída em passes sucessivos entre as páginas ainda acima da cota. Cada bloco cortado termina com `[TRUNCATED]`. O limite, a política de redistribuição e o resultado truncado fazem parte da entrada avaliada e da chave de cache; conteúdo omitido não pode sustentar a classificação ou sua citação.

@@ -15,8 +15,9 @@ from .company_evaluation import build_company_classification_report
 from .models import SearchResult
 
 
-PROMPT_VERSION = "v2"
-MAX_CONTENT_CHARS = 12_000
+PROMPT_VERSION = "v3"
+MAX_CONTENT_CHARS = 40_000
+CONTENT_BUDGET_POLICY = "per_page_equal_quota_redistribute_v1"
 DEFAULT_LLM_CACHE_DIR = (
     Path(__file__).resolve().parents[2] / "cache" / "llm_classifier"
 )
@@ -29,6 +30,7 @@ _CACHE_FIELDS = {"role", "confidence", "citation", "reasoning"}
 _ON_MISS_MODES = {"raise", "dry_run"}
 _INVALID_CACHED_RESPONSE = object()
 PAGE_BREAK = "\n--- PAGE BREAK ---\n"
+TRUNCATED_MARKER = "[TRUNCATED]"
 
 
 class SupplierRole(str, Enum):
@@ -54,6 +56,7 @@ class ClassificationResult:
     confidence: Confidence
     citation: str
     reasoning: str
+    evidence_truncated: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.role, SupplierRole):
@@ -64,6 +67,8 @@ class ClassificationResult:
             raise TypeError("citation must be text")
         if not isinstance(self.reasoning, str):
             raise TypeError("reasoning must be text")
+        if not isinstance(self.evidence_truncated, bool):
+            raise TypeError("evidence_truncated must be boolean")
 
 
 class CompanyClassifier(ABC):
@@ -87,6 +92,13 @@ class DomainClassificationInput:
     extracted_content: str
     page_count: int
     source_urls: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetedEvidence:
+    content: str
+    evidence_truncated: bool
+    page_allocations: tuple[int, ...]
 
 
 def normalize_classifier_domain(value: str) -> str:
@@ -247,18 +259,61 @@ class RuleBasedCompanyClassifier(CompanyClassifier):
         )
 
 
+def _allocate_page_characters(page_lengths: tuple[int, ...]) -> tuple[int, ...]:
+    allocations = [0] * len(page_lengths)
+    remaining_budget = MAX_CONTENT_CHARS
+    active = list(range(len(page_lengths)))
+    while active:
+        quota = remaining_budget // len(active)
+        fitting = [index for index in active if page_lengths[index] <= quota]
+        if fitting:
+            for index in fitting:
+                allocations[index] = page_lengths[index]
+                remaining_budget -= page_lengths[index]
+            fitting_set = set(fitting)
+            active = [index for index in active if index not in fitting_set]
+            continue
+
+        for index in active:
+            allocations[index] = quota
+        remainder = remaining_budget - quota * len(active)
+        for index in active[:remainder]:
+            allocations[index] += 1
+        remaining_budget = 0
+        break
+    return tuple(allocations)
+
+
+def budget_extracted_content(extracted_content: str) -> BudgetedEvidence:
+    pages = tuple(extracted_content.split(PAGE_BREAK))
+    allocations = _allocate_page_characters(tuple(len(page) for page in pages))
+    truncated_pages: list[str] = []
+    evidence_truncated = False
+    for page, allocation in zip(pages, allocations):
+        page_was_truncated = allocation < len(page)
+        truncated_page = page[:allocation]
+        if page_was_truncated:
+            truncated_page += TRUNCATED_MARKER
+            evidence_truncated = True
+        truncated_pages.append(truncated_page)
+    return BudgetedEvidence(
+        content=PAGE_BREAK.join(truncated_pages),
+        evidence_truncated=evidence_truncated,
+        page_allocations=allocations,
+    )
+
+
 def truncate_extracted_content(extracted_content: str) -> str:
-    return extracted_content[:MAX_CONTENT_CHARS]
+    return budget_extracted_content(extracted_content).content
 
 
-def build_llm_company_classifier_prompt(
-    domain: str,
+def _render_llm_company_classifier_prompt(
+    normalized_domain: str,
     title: str,
-    extracted_content: str,
+    budgeted_evidence: BudgetedEvidence,
     product_context: str,
 ) -> str:
-    normalized_domain = normalize_classifier_domain(domain)
-    truncated_content = truncate_extracted_content(extracted_content)
+    evidence_truncated = str(budgeted_evidence.evidence_truncated).lower()
     return f"""You classify the role of an entity relative to a specific product for an internal sourcing evidence system.
 
 Use only the supplied domain, page title, product context, and extracted page content. The classification must always be relative to product_context. Never infer a role from the domain name, site appearance, wording quality, or an unsupported claim. When evidence is missing, ambiguous, or contradictory, return UNKNOWN. A false MANUFACTURER classification is worse than a false negative.
@@ -280,6 +335,7 @@ Evidence rules:
 - citation must be a literal, contiguous excerpt from extracted_content; whitespace may be normalized, but words and punctuation must not be changed.
 - Do not use the domain or title as the citation.
 - Choose the shortest excerpt that directly supports the role.
+- [TRUNCATED] marks the end of a page whose remaining content was omitted by the deterministic per-page budget.
 - If no supporting excerpt exists in extracted_content, set role to UNKNOWN and citation to an empty string.
 - reasoning must be short and must not add facts absent from the supplied input.
 
@@ -295,9 +351,52 @@ title:
 product_context:
 {product_context}
 
+evidence_truncated:
+{evidence_truncated}
+
 extracted_content:
-{truncated_content}
+{budgeted_evidence.content}
 """
+
+
+def build_llm_company_classifier_prompt(
+    domain: str,
+    title: str,
+    extracted_content: str,
+    product_context: str,
+) -> str:
+    normalized_domain = normalize_classifier_domain(domain)
+    budgeted_evidence = budget_extracted_content(extracted_content)
+    return _render_llm_company_classifier_prompt(
+        normalized_domain,
+        title,
+        budgeted_evidence,
+        product_context,
+    )
+
+
+def _llm_cache_key_from_budgeted_evidence(
+    normalized_domain: str,
+    title: str,
+    budgeted_evidence: BudgetedEvidence,
+    product_context: str,
+    prompt_version: str,
+) -> str:
+    serialized = json.dumps(
+        [
+            normalized_domain,
+            title,
+            budgeted_evidence.content,
+            budgeted_evidence.evidence_truncated,
+            product_context,
+            prompt_version,
+            MAX_CONTENT_CHARS,
+            CONTENT_BUDGET_POLICY,
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def llm_cache_key(
@@ -308,19 +407,14 @@ def llm_cache_key(
     prompt_version: str = PROMPT_VERSION,
 ) -> str:
     normalized_domain = normalize_classifier_domain(domain)
-    truncated_content = truncate_extracted_content(extracted_content)
-    serialized = json.dumps(
-        [
-            normalized_domain,
-            title,
-            truncated_content,
-            product_context,
-            prompt_version,
-        ],
-        ensure_ascii=False,
-        separators=(",", ":"),
+    budgeted_evidence = budget_extracted_content(extracted_content)
+    return _llm_cache_key_from_budgeted_evidence(
+        normalized_domain,
+        title,
+        budgeted_evidence,
+        product_context,
+        prompt_version,
     )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def read_llm_cache(
@@ -420,17 +514,18 @@ class LLMCompanyClassifier(CompanyClassifier):
         extracted_content: str,
         product_context: str,
     ) -> ClassificationResult:
-        truncated_content = truncate_extracted_content(extracted_content)
-        prompt = build_llm_company_classifier_prompt(
-            domain,
+        normalized_domain = normalize_classifier_domain(domain)
+        budgeted_evidence = budget_extracted_content(extracted_content)
+        prompt = _render_llm_company_classifier_prompt(
+            normalized_domain,
             title,
-            truncated_content,
+            budgeted_evidence,
             product_context,
         )
-        key = llm_cache_key(
-            domain,
+        key = _llm_cache_key_from_budgeted_evidence(
+            normalized_domain,
             title,
-            truncated_content,
+            budgeted_evidence,
             product_context,
             self.prompt_version,
         )
@@ -438,7 +533,8 @@ class LLMCompanyClassifier(CompanyClassifier):
         if cached_response is not None:
             return self._parse_response(
                 cached_response,
-                extracted_content=truncated_content,
+                extracted_content=budgeted_evidence.content,
+                evidence_truncated=budgeted_evidence.evidence_truncated,
             )
         if self.on_miss == "raise":
             raise NotImplementedError("LLM provider not configured")
@@ -452,15 +548,22 @@ class LLMCompanyClassifier(CompanyClassifier):
             confidence=Confidence.LOW,
             citation="",
             reasoning="CACHE_MISS_DRY_RUN",
+            evidence_truncated=budgeted_evidence.evidence_truncated,
         )
 
-    def _failure_result(self, reason: str) -> ClassificationResult:
+    def _failure_result(
+        self,
+        reason: str,
+        *,
+        evidence_truncated: bool,
+    ) -> ClassificationResult:
         self._failure_counts[reason] += 1
         return ClassificationResult(
             role=SupplierRole.UNKNOWN,
             confidence=Confidence.LOW,
             citation="",
             reasoning=reason,
+            evidence_truncated=evidence_truncated,
         )
 
     def _parse_response(
@@ -468,34 +571,57 @@ class LLMCompanyClassifier(CompanyClassifier):
         response: object,
         *,
         extracted_content: str,
+        evidence_truncated: bool,
     ) -> ClassificationResult:
         if response is _INVALID_CACHED_RESPONSE:
-            return self._failure_result("INVALID_RESPONSE")
+            return self._failure_result(
+                "INVALID_RESPONSE",
+                evidence_truncated=evidence_truncated,
+            )
         if isinstance(response, str):
             try:
                 response = json.loads(response)
             except json.JSONDecodeError:
-                return self._failure_result("INVALID_RESPONSE")
+                return self._failure_result(
+                    "INVALID_RESPONSE",
+                    evidence_truncated=evidence_truncated,
+                )
         if not isinstance(response, Mapping) or set(response) != _CACHE_FIELDS:
-            return self._failure_result("INVALID_RESPONSE")
+            return self._failure_result(
+                "INVALID_RESPONSE",
+                evidence_truncated=evidence_truncated,
+            )
         try:
             role = SupplierRole(response["role"])
             confidence = Confidence(response["confidence"])
         except (TypeError, ValueError):
-            return self._failure_result("INVALID_RESPONSE")
+            return self._failure_result(
+                "INVALID_RESPONSE",
+                evidence_truncated=evidence_truncated,
+            )
         citation = response["citation"]
         reasoning = response["reasoning"]
         if not isinstance(citation, str) or not isinstance(reasoning, str):
-            return self._failure_result("INVALID_RESPONSE")
+            return self._failure_result(
+                "INVALID_RESPONSE",
+                evidence_truncated=evidence_truncated,
+            )
         if not citation.strip():
-            return self._failure_result("NO_CITATION")
+            return self._failure_result(
+                "NO_CITATION",
+                evidence_truncated=evidence_truncated,
+            )
         normalized_citation = _normalized_whitespace(citation)
         normalized_content = _normalized_whitespace(extracted_content)
         if normalized_citation not in normalized_content:
-            return self._failure_result("CITATION_NOT_FOUND")
+            return self._failure_result(
+                "CITATION_NOT_FOUND",
+                evidence_truncated=evidence_truncated,
+            )
         return ClassificationResult(
             role=role,
             confidence=confidence,
             citation=citation,
             reasoning=reasoning,
+            evidence_truncated=evidence_truncated,
         )

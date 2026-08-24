@@ -36,6 +36,7 @@ from src.search.company_classifier import (
     PROMPT_VERSION,
     LLMCompanyClassifier,
     DomainClassificationInput,
+    budget_extracted_content,
     group_extracted_pages_by_domain,
     normalize_classifier_domain,
 )
@@ -569,6 +570,56 @@ def _human_labeled_domains(category: str) -> set[str]:
     }
 
 
+def _urls_by_domain(results: list[SearchResult]) -> dict[str, list[str]]:
+    indexed: dict[str, list[str]] = {}
+    for result in results:
+        domain = normalize_classifier_domain(result.url)
+        urls = indexed.setdefault(domain, [])
+        if result.url not in urls:
+            urls.append(result.url)
+    return indexed
+
+
+def diagnose_labeled_domain_coverage(
+    labeled_absent: list[str],
+    results: list[SearchResult],
+    attempted_urls: list[str],
+    extracted_content_by_url: dict[str, str],
+) -> dict[str, object]:
+    search_urls = _urls_by_domain(results)
+    attempted_set = set(attempted_urls)
+    attempted_by_domain = _urls_by_domain(
+        [result for result in results if result.url in attempted_set]
+    )
+    extracted_domains = {
+        normalize_classifier_domain(url) for url in extracted_content_by_url
+    }
+    categories = {
+        "NOT_IN_SEARCH_RESULTS": [],
+        "IN_SEARCH_NOT_EXTRACTED": [],
+        "EXTRACTION_FAILED": [],
+    }
+    for domain in sorted(labeled_absent):
+        if domain not in search_urls:
+            category = "NOT_IN_SEARCH_RESULTS"
+            source_url = None
+        elif domain in attempted_by_domain and domain not in extracted_domains:
+            category = "EXTRACTION_FAILED"
+            source_url = attempted_by_domain[domain][0]
+        else:
+            category = "IN_SEARCH_NOT_EXTRACTED"
+            source_url = search_urls[domain][0]
+        categories[category].append(
+            {"domain": domain, "source_url": source_url}
+        )
+    return {
+        "counts": {
+            category: len(items) for category, items in categories.items()
+        },
+        "domains": categories,
+    }
+
+
 def _token_and_cost_estimate(
     *,
     calls: int,
@@ -634,6 +685,7 @@ def llm_classifier_dry_run_payload(
             category_config=load_search_category_config(category),
         )
         _, results = _execute_queries(search_provider, queries)
+        selected_urls = select_extraction_urls(results)
         extracted_content, extraction = _extract_case_content(
             results,
             extract_provider,
@@ -658,6 +710,12 @@ def llm_classifier_dry_run_payload(
                 "labeled_domains_found": labeled_found,
                 "labeled_domains_absent_count": len(labeled_absent),
                 "labeled_domains_absent": labeled_absent,
+                "absent_domain_diagnosis": diagnose_labeled_domain_coverage(
+                    labeled_absent,
+                    results,
+                    selected_urls,
+                    extracted_content,
+                ),
             }
         else:
             domain_inputs = all_domain_inputs
@@ -666,13 +724,16 @@ def llm_classifier_dry_run_payload(
             cache_dir,
             on_miss="dry_run",
         )
+        evidence_truncated_domains: list[str] = []
         for domain_input in domain_inputs:
-            classifier.classify(
+            classification = classifier.classify(
                 domain_input.domain,
                 domain_input.title,
                 domain_input.extracted_content,
                 case["product_context"],
             )
+            if classification.evidence_truncated:
+                evidence_truncated_domains.append(domain_input.domain)
 
         metrics = classifier.execution_metrics
         calls = int(metrics["provider_calls_planned"])
@@ -699,11 +760,18 @@ def llm_classifier_dry_run_payload(
                     "domain": item.domain,
                     "pages_merged": item.page_count,
                     "content_characters": len(item.extracted_content),
+                    "evidence_truncated": (
+                        budget_extracted_content(
+                            item.extracted_content
+                        ).evidence_truncated
+                    ),
                 }
                 for item in domain_inputs
             ],
             "content_size_diagnostics": _content_size_diagnostics(domain_inputs),
             "provider_calls_planned": calls,
+            "evidence_truncated_count": len(evidence_truncated_domains),
+            "evidence_truncated_domains": evidence_truncated_domains,
             "total_prompt_characters": characters,
             **_token_and_cost_estimate(
                 calls=calls,
