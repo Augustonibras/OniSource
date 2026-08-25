@@ -38,7 +38,7 @@ def test_gemini_provider_uses_approved_model_and_api_version() -> None:
         "https://generativelanguage.googleapis.com/v1beta/models/"
         "gemini-3.6-flash:generateContent"
     )
-    assert GEMINI_MAX_OUTPUT_TOKENS == 512
+    assert GEMINI_MAX_OUTPUT_TOKENS == 2048
     assert MAX_LLM_CALLS == 80
 
 
