@@ -15,7 +15,7 @@ from .company_evaluation import build_company_classification_report
 from .models import SearchResult
 
 
-PROMPT_VERSION = "v7"
+PROMPT_VERSION = "v8"
 MAX_CONTENT_CHARS = 40_000
 CONTENT_BUDGET_POLICY = "per_page_equal_quota_redistribute_v1"
 DEFAULT_LLM_CACHE_DIR = (
@@ -427,7 +427,7 @@ Allowed role values are exactly: MANUFACTURER, DISTRIBUTOR, TRADER, MARKETPLACE_
 Allowed confidence values are exactly: HIGH, MEDIUM, LOW.
 
 Class definitions:
-- MANUFACTURER: the company itself produces or operates manufacturing for the product in product_context, supported by production evidence beyond a generic self-description.
+- MANUFACTURER: the company itself produces or operates manufacturing for the product in product_context, supported by an active own-production verb or stronger process, plant, certification, technological, or industrial evidence rather than a generic manufacturer label.
 - DISTRIBUTOR: the company distributes or resells the product in product_context without supported evidence that it manufactures that product itself.
 - TRADER: the company trades, imports, exports, or intermediates the product in product_context without supported own production.
 - MARKETPLACE_OR_DIRECTORY: the page lists multiple sellers, suppliers, companies, or trade records as a marketplace, directory, or data platform rather than representing one supplier.
@@ -445,12 +445,15 @@ Classification unit:
 Decision rules (apply in this exact order):
 1. Selling a third-party brand is decisive. If the entity resells, represents, or acts as an agent for third-party brands, such as "agents for different brands", "we supply Lomon, Taihai, panzhihua", or "LOMON Brand", the role is TRADER without exception, even if the entity also calls itself a manufacturer.
 2. Multiple self-declared roles mean TRADER. If the entity describes itself simultaneously as a manufacturer and as a trading company, agent, or distributor, such as "Business Type: Manufacturer, Distributor/Wholesaler, Agent, Trade Company", and there is no own-production proof, the role is TRADER.
-3. A production-capacity claim alone is not enough for MANUFACTURER. Claims about operating factories, stated monthly capacity, or being "the largest manufacturer" are self-declarations rather than proof. Use the best-supported role and set needs_review to true.
-4. MANUFACTURER requires own-production evidence beyond self-declaration: a described production process, an identified plant with its location, a factory certification, detailed technological capability, or verifiable industrial history.
-5. UNCERTAIN is an exception, not the default. Use it only for genuinely conflicting evidence between two specific roles, and name both roles in reasoning. If the entity clearly commercializes the product but the operation type cannot be determined, prefer TRADER over UNCERTAIN: commercializing without proof of production is intermediation by definition.
+3. An active own-production verb is positive evidence and takes precedence over the intermediation fallback in rule 4. When the entity states in its own voice that it produces the product using an active production verb, such as "manufactures", "we produce", "is a producer of", or "operates plants producing", and there is no evidence of selling a third-party brand, the role is MANUFACTURER.
+   - Active production verb means MANUFACTURER, for example "Ereztech manufactures and sells this product" or "ICL is a leading producer of phosphoric acid".
+   - A generic manufacturer label without an active production verb is not enough, for example "we are a professional manufacturer" or "leading manufacturer in China".
+   - Technical process or plant evidence reinforces MANUFACTURER, for example "operates three plants using sulfate and chloride process".
+4. The intermediation fallback is subordinate to rule 3. "Commercializing without proof of production is intermediation" applies only when there is no active own-production verb. It must never override a qualifying production statement under rule 3. When the entity commercializes the product without either an active own-production verb or other own-production evidence, classify it as TRADER rather than UNCERTAIN.
+5. Set needs_review to true when there is an active own-production verb but no supporting process, plant, or capacity description.
 
 Review rule:
-- needs_review must be true whenever decision rule 3 applies or confidence is LOW; otherwise it may be false.
+- needs_review must be true whenever decision rule 5 applies or confidence is LOW; otherwise it may be false.
 
 Evidence rules:
 - citation must be a literal, contiguous excerpt from extracted_content; whitespace may be normalized, but words and punctuation must not be changed.

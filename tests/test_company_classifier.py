@@ -652,12 +652,16 @@ def test_prompt_uses_human_taxonomy_product_context_and_strict_json() -> None:
     assert "Decision rules (apply in this exact order)" in prompt
     assert "Selling a third-party brand is decisive" in prompt
     assert "Multiple self-declared roles mean TRADER" in prompt
-    assert "A production-capacity claim alone is not enough" in prompt
-    assert "MANUFACTURER requires own-production evidence" in prompt
-    assert "UNCERTAIN is an exception, not the default" in prompt
-    assert "prefer TRADER over UNCERTAIN" in prompt
+    assert "An active own-production verb is positive evidence" in prompt
+    assert '"Ereztech manufactures and sells this product"' in prompt
+    assert '"ICL is a leading producer of phosphoric acid"' in prompt
+    assert "A generic manufacturer label without an active production verb" in prompt
+    assert "Technical process or plant evidence reinforces MANUFACTURER" in prompt
+    assert "The intermediation fallback is subordinate" in prompt
+    assert "only when there is no active own-production verb" in prompt
+    assert "active own-production verb but no supporting process" in prompt
     assert "does not need to prove the exact role" in prompt
     assert "needs_review must be true" in prompt
     assert MAX_CONTENT_CHARS == 40_000
     assert CONTENT_BUDGET_POLICY == "per_page_equal_quota_redistribute_v1"
-    assert PROMPT_VERSION == "v7"
+    assert PROMPT_VERSION == "v8"
