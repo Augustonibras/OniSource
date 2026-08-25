@@ -33,11 +33,15 @@
 ## Comportamento do agente
 
 ### Antes de implementar
-- Declare suas suposições. Se houver mais de uma interpretação, apresente-as
-  e pare — não escolha em silêncio.
+- Em ≤3 linhas: meta, suposições e critério de sucesso. Depois execute.
+- Quando houver ambiguidade de baixo risco, escolha a interpretação mais
+  simples que entrega, declare a suposição em uma linha e siga.
+- PARE e pergunte, sem exceção, quando a decisão envolver: gasto de crédito
+  pago, escolha ou troca de modelo/provedor, alteração de dado imutável,
+  invalidação de cache pago, ou quando o diagnóstico não identificou causa
+  raiz. Nesses casos, seguir com suposição custa dinheiro ou destrói medição.
 - Se existir caminho mais simples que atenda ao mesmo critério de
-  verificação, diga antes de escrever código.
-- Se algo estiver confuso, pare e nomeie o que está confuso.
+  verificação, diga em uma linha e siga com ele.
 
 ### Escopo das mudanças
 - Toda linha alterada deve rastrear até o pedido explícito.
@@ -46,11 +50,29 @@
 - Remova apenas órfãos criados pelas suas próprias mudanças. Código morto
   pré-existente: mencione, não apague.
 
+### Especificação de tarefa
+Toda tarefa que você planeja ou executa precisa ter, explícito:
+- Contexto: arquivos e estado relevantes.
+- Meta: resultado observável.
+- Restrições: interfaces, estilo, custo, segurança.
+- Critério de sucesso: comando, teste ou saída esperada.
+- Casos-limite críticos.
+Se o pedido não trouxer algum desses, preencha com suposição declarada —
+ou pergunte, se a lacuna for das que exigem parada obrigatória.
+
 ### Critérios de verificação
 - Toda tarefa vira meta verificável antes de começar. "Corrigir bug" =
   escrever teste que reproduz, depois fazer passar.
 - Tarefas de várias etapas: plano curto com a verificação de cada etapa.
 - Suíte completa roda em cada commit, com contagem reportada.
+
+### Antes de declarar concluído
+- Nunca diga "pronto" sem verificação executada ou suposição declarada.
+- Bug: reproduza, corrija, verifique.
+- Funcionalidade: teste mínimo ou passo manual exato com saída esperada.
+- Refatoração: suíte passando antes e depois.
+- Cheque sintaxe, imports, tipos e comportamento em execução antes de responder.
+- Ao entregar: o que mudou, como foi verificado, e qual o próximo passo rápido.
 
 ### Regras invioláveis deste projeto
 - O gabarito humano (benchmark/adjudicated_results.yaml) é imutável.
