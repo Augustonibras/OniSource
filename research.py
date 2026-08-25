@@ -1034,6 +1034,7 @@ def llm_classifier_smoke_payload(
                 "confidence": result.confidence.value,
                 "citation": result.citation,
                 "reasoning": result.reasoning,
+                "needs_review": result.needs_review,
                 "finishReason": finish_reason,
                 "evidence_truncated": result.evidence_truncated,
                 "cache_key": key,
@@ -1300,6 +1301,7 @@ def llm_classifier_benchmark_payload(
             "confidence": result.confidence.value,
             "citation": result.citation,
             "reasoning": result.reasoning,
+            "needs_review": result.needs_review,
             "finishReason": usage["finish_reason"],
             "evidence_truncated": result.evidence_truncated,
             "correct": result.role.value == human_label,
@@ -1397,6 +1399,13 @@ def llm_classifier_benchmark_payload(
             bool(row["correct"]) and bool(row["evidence_truncated"])
             for row in results
         ),
+        "needs_review": {
+            "total": sum(bool(row["needs_review"]) for row in results),
+            "correct": sum(
+                bool(row["needs_review"]) and bool(row["correct"])
+                for row in results
+            ),
+        },
         "actual_token_totals": token_totals,
         "provider_usage_this_execution": provider_usage,
         "errors": errors,

@@ -15,7 +15,7 @@ from .company_evaluation import build_company_classification_report
 from .models import SearchResult
 
 
-PROMPT_VERSION = "v6"
+PROMPT_VERSION = "v7"
 MAX_CONTENT_CHARS = 40_000
 CONTENT_BUDGET_POLICY = "per_page_equal_quota_redistribute_v1"
 DEFAULT_LLM_CACHE_DIR = (
@@ -27,7 +27,7 @@ LLM_FAILURE_REASONS = (
     "INVALID_RESPONSE",
     "EMPTY_RESPONSE",
 )
-_CACHE_FIELDS = {"role", "confidence", "citation", "reasoning"}
+_CACHE_FIELDS = {"role", "confidence", "citation", "reasoning", "needs_review"}
 _ON_MISS_MODES = {"raise", "dry_run", "live"}
 _PROVIDER_CACHE_FORMAT = "raw_llm_provider_response_v1"
 _INVALID_CACHED_RESPONSE = object()
@@ -58,6 +58,7 @@ class ClassificationResult:
     confidence: Confidence
     citation: str
     reasoning: str
+    needs_review: bool = False
     evidence_truncated: bool = False
 
     def __post_init__(self) -> None:
@@ -69,8 +70,12 @@ class ClassificationResult:
             raise TypeError("citation must be text")
         if not isinstance(self.reasoning, str):
             raise TypeError("reasoning must be text")
+        if not isinstance(self.needs_review, bool):
+            raise TypeError("needs_review must be boolean")
         if not isinstance(self.evidence_truncated, bool):
             raise TypeError("evidence_truncated must be boolean")
+        if self.confidence is Confidence.LOW and not self.needs_review:
+            object.__setattr__(self, "needs_review", True)
 
 
 class CompanyClassifier(ABC):
@@ -437,22 +442,29 @@ Classification unit:
 - An article, blog post, comparison, or ranking published on the company's own site does not make the entity MARKETPLACE_OR_DIRECTORY or NOT_A_COMPANY. Those classes describe the nature of the entity: a marketplace or directory exists to list third parties, while NOT_A_COMPANY is a news outlet, market-research consultancy, government body, or association. A trading company that publishes a ranking remains a trading company.
 - When the domain content is predominantly commercial, such as products, quotations, and sales contacts, and only part is editorial, classify according to the commercial content.
 
-Role evidence and fallback:
-- DISTRIBUTOR and TRADER require positive evidence of resale, distribution, import, or export. Do not use either as a default when manufacturing evidence is missing.
-- If the entity clearly supplies the product but the evidence does not separate manufacturing from resale, the role is UNCERTAIN.
-- If there is not enough evidence even for that conclusion, the role is UNKNOWN.
+Decision rules (apply in this exact order):
+1. Selling a third-party brand is decisive. If the entity resells, represents, or acts as an agent for third-party brands, such as "agents for different brands", "we supply Lomon, Taihai, panzhihua", or "LOMON Brand", the role is TRADER without exception, even if the entity also calls itself a manufacturer.
+2. Multiple self-declared roles mean TRADER. If the entity describes itself simultaneously as a manufacturer and as a trading company, agent, or distributor, such as "Business Type: Manufacturer, Distributor/Wholesaler, Agent, Trade Company", and there is no own-production proof, the role is TRADER.
+3. A production-capacity claim alone is not enough for MANUFACTURER. Claims about operating factories, stated monthly capacity, or being "the largest manufacturer" are self-declarations rather than proof. Use the best-supported role and set needs_review to true.
+4. MANUFACTURER requires own-production evidence beyond self-declaration: a described production process, an identified plant with its location, a factory certification, detailed technological capability, or verifiable industrial history.
+5. UNCERTAIN is an exception, not the default. Use it only for genuinely conflicting evidence between two specific roles, and name both roles in reasoning. If the entity clearly commercializes the product but the operation type cannot be determined, prefer TRADER over UNCERTAIN: commercializing without proof of production is intermediation by definition.
+
+Review rule:
+- needs_review must be true whenever decision rule 3 applies or confidence is LOW; otherwise it may be false.
 
 Evidence rules:
 - citation must be a literal, contiguous excerpt from extracted_content; whitespace may be normalized, but words and punctuation must not be changed.
 - Do not use the domain or title as the citation.
-- Choose the shortest excerpt that directly supports the role.
+- For a commercial company role, citation must evidence the entity's commercial activity with the product. It does not need to prove the exact role. A literal institutional sentence showing that the entity commercializes the product is valid.
+- For MARKETPLACE_OR_DIRECTORY or NOT_A_COMPANY, citation must evidence the nature of the entity.
+- Choose the shortest excerpt that satisfies the applicable citation rule.
 - [TRUNCATED] marks the end of a page whose remaining content was omitted by the deterministic per-page budget.
-- If no supporting excerpt exists in extracted_content, set role to UNKNOWN and citation to an empty string.
+- If no excerpt satisfying the applicable citation rule exists in extracted_content, set role to UNKNOWN and citation to an empty string.
 - reasoning must be short and must not add facts absent from the supplied input.
 - marketplace_signal and noise_signal are human-configured retrieval hints. They are evidence inputs to consider, not automatic classifications.
 
 Return exactly one JSON object with no Markdown, commentary, or additional keys:
-{{"role":"UNKNOWN","confidence":"LOW","citation":"","reasoning":"short evidence-based reason"}}
+{{"role":"UNKNOWN","confidence":"LOW","citation":"","reasoning":"short evidence-based reason","needs_review":true}}
 
 domain:
 {normalized_domain}
@@ -848,7 +860,12 @@ class LLMCompanyClassifier(CompanyClassifier):
             )
         citation = response["citation"]
         reasoning = response["reasoning"]
-        if not isinstance(citation, str) or not isinstance(reasoning, str):
+        needs_review = response["needs_review"]
+        if (
+            not isinstance(citation, str)
+            or not isinstance(reasoning, str)
+            or not isinstance(needs_review, bool)
+        ):
             return self._failure_result(
                 "INVALID_RESPONSE",
                 evidence_truncated=evidence_truncated,
@@ -870,5 +887,6 @@ class LLMCompanyClassifier(CompanyClassifier):
             confidence=confidence,
             citation=citation,
             reasoning=reasoning,
+            needs_review=needs_review,
             evidence_truncated=evidence_truncated,
         )

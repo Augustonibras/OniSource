@@ -60,12 +60,18 @@ class _UncitedLLMClassifier(CompanyClassifier):
         )
 
 
-def _cached_response(citation: str) -> dict[str, object]:
+def _cached_response(
+    citation: str,
+    *,
+    confidence: str = "MEDIUM",
+    needs_review: bool = False,
+) -> dict[str, object]:
     return {
         "role": "MANUFACTURER",
-        "confidence": "MEDIUM",
+        "confidence": confidence,
         "citation": citation,
         "reasoning": "The page explicitly describes own production.",
+        "needs_review": needs_review,
     }
 
 
@@ -422,6 +428,7 @@ def test_llm_classifier_cache_hit_is_parsed_without_provider_call(
         confidence=Confidence.MEDIUM,
         citation=citation,
         reasoning="The page explicitly describes own production.",
+        needs_review=False,
         evidence_truncated=False,
     )
     assert classifier.execution_metrics["failure_counts"] == {
@@ -441,6 +448,41 @@ def test_citation_comparison_normalizes_whitespace(tmp_path: Path) -> None:
 
     assert result.role is SupplierRole.MANUFACTURER
     assert result.citation == citation
+
+
+def test_low_confidence_forces_needs_review_true(tmp_path: Path) -> None:
+    domain = "example.com"
+    title = "Example supplier"
+    content = "We sell titanium dioxide to industrial customers."
+    citation = "We sell titanium dioxide"
+    write_llm_cache(
+        tmp_path,
+        _key(domain, title, content),
+        _cached_response(citation, confidence="LOW", needs_review=False),
+    )
+    classifier = LLMCompanyClassifier(_RejectingProvider(), tmp_path)
+
+    result = classifier.classify(domain, title, content, PRODUCT_CONTEXT)
+
+    assert result.confidence is Confidence.LOW
+    assert result.needs_review is True
+
+
+def test_explicit_needs_review_is_preserved(tmp_path: Path) -> None:
+    domain = "example.com"
+    title = "Example supplier"
+    content = "We operate three factories for titanium dioxide."
+    citation = "We operate three factories"
+    write_llm_cache(
+        tmp_path,
+        _key(domain, title, content),
+        _cached_response(citation, needs_review=True),
+    )
+    classifier = LLMCompanyClassifier(_RejectingProvider(), tmp_path)
+
+    result = classifier.classify(domain, title, content, PRODUCT_CONTEXT)
+
+    assert result.needs_review is True
 
 
 def test_empty_citation_becomes_unknown_and_is_counted(tmp_path: Path) -> None:
@@ -485,12 +527,23 @@ def test_missing_citation_text_becomes_unknown_and_is_counted(tmp_path: Path) ->
                 "confidence": "HIGH",
                 "citation": "Evidence",
                 "reasoning": "Reason",
+                "needs_review": False,
+            },
+            False,
+        ),
+        (
+            {
+                "role": "MANUFACTURER",
+                "confidence": "HIGH",
+                "citation": "Evidence",
+                "reasoning": "Reason",
+                "needs_review": "false",
             },
             False,
         ),
         (None, True),
     ],
-    ids=("missing-field", "unknown-enum", "invalid-json"),
+    ids=("missing-field", "unknown-enum", "invalid-review", "invalid-json"),
 )
 def test_invalid_responses_become_unknown_and_are_counted(
     tmp_path: Path,
@@ -589,14 +642,22 @@ def test_prompt_uses_human_taxonomy_product_context_and_strict_json() -> None:
     assert '"confidence":"LOW"' in prompt
     assert '"citation":""' in prompt
     assert '"reasoning":"short evidence-based reason"' in prompt
+    assert '"needs_review":true' in prompt
     assert "whitespace may be normalized" in prompt
     assert "classify the entity that owns the domain" in prompt
     assert "discontinued, sold out, or out-of-line product" in prompt
     assert "published on the company's own site" in prompt
     assert "A trading company that publishes a ranking remains a trading company" in prompt
     assert "classify according to the commercial content" in prompt
-    assert "DISTRIBUTOR and TRADER require positive evidence" in prompt
-    assert "the role is UNCERTAIN" in prompt
+    assert "Decision rules (apply in this exact order)" in prompt
+    assert "Selling a third-party brand is decisive" in prompt
+    assert "Multiple self-declared roles mean TRADER" in prompt
+    assert "A production-capacity claim alone is not enough" in prompt
+    assert "MANUFACTURER requires own-production evidence" in prompt
+    assert "UNCERTAIN is an exception, not the default" in prompt
+    assert "prefer TRADER over UNCERTAIN" in prompt
+    assert "does not need to prove the exact role" in prompt
+    assert "needs_review must be true" in prompt
     assert MAX_CONTENT_CHARS == 40_000
     assert CONTENT_BUDGET_POLICY == "per_page_equal_quota_redistribute_v1"
-    assert PROMPT_VERSION == "v6"
+    assert PROMPT_VERSION == "v7"

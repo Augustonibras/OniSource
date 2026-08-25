@@ -92,6 +92,7 @@ def test_gemini_provider_retries_transient_errors_and_reports_real_tokens() -> N
             "confidence": "HIGH",
             "citation": "own production plant",
             "reasoning": "Direct production evidence.",
+            "needs_review": False,
         }
     )
     session = _FakeSession(
@@ -322,6 +323,7 @@ class _CacheOrderProvider(LLMProvider):
                     "confidence": "HIGH",
                     "citation": "own production plant",
                     "reasoning": "Direct production evidence.",
+                    "needs_review": False,
                 }
             ),
             LLMTokenUsage(50, 20, 70),
