@@ -111,9 +111,9 @@ def test_precision_is_calculated_over_predictions_for_each_role() -> None:
     manufacturer_recall = evaluation["recall_by_role"]["MANUFACTURER"]
     assert manufacturer_recall == {
         "correct": 1,
-        "human_total": 3,
-        "false_negatives": 2,
-        "recall_percentage": 33.33,
+        "human_total": 4,
+        "false_negatives": 3,
+        "recall_percentage": 25.0,
     }
     matrix = evaluation["confusion_matrix"]
     assert "UNKNOWN" in matrix["columns"]
@@ -226,6 +226,16 @@ def test_missed_manufacturer_reports_the_blocking_gate() -> None:
             ],
         },
         {
+            "domain": "wotaichem.com",
+            "url": next(
+                item.url
+                for item in adjudicated
+                if item.domain == "wotaichem.com"
+            ),
+            "predicted_role": "NOT_FOUND",
+            "blocking_gates": ["RESULT_NOT_FOUND"],
+        },
+        {
             "domain": "www.lomonbillions.global",
             "url": next(
                 item.url
@@ -272,9 +282,9 @@ def test_combined_evaluation_sums_recall_and_confusion_counts() -> None:
     assert combined["matched"] == 2
     assert combined["recall_by_role"]["MANUFACTURER"] == {
         "correct": 1,
-        "human_total": 5,
-        "false_negatives": 4,
-        "recall_percentage": 20.0,
+        "human_total": 6,
+        "false_negatives": 5,
+        "recall_percentage": 16.67,
     }
     assert combined["confusion_matrix"]["values"]["MANUFACTURER"] == {
         "MANUFACTURER": 1,

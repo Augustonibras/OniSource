@@ -22,7 +22,8 @@ cases:
         human_label: "NOT_A_COMPANY"
       wotaichem.com:
         url: "https://wotaichem.com/china-titanium-dioxide-tio2"
-        human_label: "TRADER"
+        human_label: "MANUFACTURER"
+        human_note: "opera três plantas de TiO₂ usando processo sulfato e cloreto, com capacidade de 100.000 t/ano, vende apenas marca própria (YWR6618, YWR6628, YWR6638), sem venda de marca de terceiro; verbo de produção em primeira pessoa + sem marca de terceiro = MANUFACTURER"
       www.cctio2.com:
         url: "http://www.cctio2.com/wp/lomon-billions-r-996-titanium-dioxide"
         human_label: "TRADER"

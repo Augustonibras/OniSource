@@ -419,9 +419,9 @@ def test_phase_zero_benchmark_defaults_to_offline_cassettes(monkeypatch) -> None
     assert payload["total_credits_consumed"] == 0
     assert payload["adjudicated_recall_by_role"]["MANUFACTURER"] == {
         "correct": 2,
-        "human_total": 5,
-        "false_negatives": 3,
-        "recall_percentage": 40.0,
+        "human_total": 6,
+        "false_negatives": 4,
+        "recall_percentage": 33.33,
     }
     assert payload["adjudicated_confusion_matrix"]["columns"][-2:] == [
         "NOT_A_COMPANY",
