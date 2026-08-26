@@ -236,7 +236,7 @@ def test_fixed_rule_roles_are_mapped_explicitly_without_fallback_inference() -> 
     assert rule_role_to_supplier_role("UNMAPPED_RULE_VALUE") is SupplierRole.UNKNOWN
 
 
-def test_citation_gate_applies_only_to_classifiers_that_require_it() -> None:
+def test_citation_gate_flags_uncited_llm_result_without_changing_role() -> None:
     gated = classify_with_citation_gate(
         _UncitedLLMClassifier(),
         "example.com",
@@ -245,8 +245,9 @@ def test_citation_gate_applies_only_to_classifiers_that_require_it() -> None:
         PRODUCT_CONTEXT,
     )
 
-    assert gated.role is SupplierRole.UNKNOWN
-    assert gated.reasoning == "NO_CITATION"
+    assert gated.role is SupplierRole.MANUFACTURER
+    assert gated.reasoning == "Unsupported classifier output."
+    assert gated.citation_verified is False
 
 
 def test_rule_based_adapter_keeps_its_prediction_without_a_citation_gate() -> None:
@@ -273,6 +274,7 @@ def test_rule_based_adapter_keeps_its_prediction_without_a_citation_gate() -> No
     assert classifier.requires_citation is False
     assert raw_result.role is SupplierRole.MANUFACTURER
     assert raw_result.citation == ""
+    assert raw_result.citation_verified is False
     assert consumed_result.role is SupplierRole.MANUFACTURER
 
 
@@ -485,7 +487,7 @@ def test_explicit_needs_review_is_preserved(tmp_path: Path) -> None:
     assert result.needs_review is True
 
 
-def test_empty_citation_becomes_unknown_and_is_counted(tmp_path: Path) -> None:
+def test_empty_citation_keeps_model_role_and_is_flagged_and_counted(tmp_path: Path) -> None:
     domain = "example.com"
     title = "Example"
     content = "No role evidence."
@@ -494,12 +496,15 @@ def test_empty_citation_becomes_unknown_and_is_counted(tmp_path: Path) -> None:
 
     result = classifier.classify(domain, title, content, PRODUCT_CONTEXT)
 
-    assert result.role is SupplierRole.UNKNOWN
-    assert result.reasoning == "NO_CITATION"
+    assert result.role is SupplierRole.MANUFACTURER
+    assert result.reasoning == "The page explicitly describes own production."
+    assert result.citation_verified is False
     assert classifier.execution_metrics["failure_counts"]["NO_CITATION"] == 1
 
 
-def test_missing_citation_text_becomes_unknown_and_is_counted(tmp_path: Path) -> None:
+def test_missing_citation_text_keeps_model_role_and_is_flagged_and_counted(
+    tmp_path: Path,
+) -> None:
     domain = "example.com"
     title = "Example"
     content = "The page contains no production statement."
@@ -512,8 +517,9 @@ def test_missing_citation_text_becomes_unknown_and_is_counted(tmp_path: Path) ->
 
     result = classifier.classify(domain, title, content, PRODUCT_CONTEXT)
 
-    assert result.role is SupplierRole.UNKNOWN
-    assert result.reasoning == "CITATION_NOT_FOUND"
+    assert result.role is SupplierRole.MANUFACTURER
+    assert result.reasoning == "The page explicitly describes own production."
+    assert result.citation_verified is False
     assert classifier.execution_metrics["failure_counts"]["CITATION_NOT_FOUND"] == 1
 
 
@@ -564,6 +570,7 @@ def test_invalid_responses_become_unknown_and_are_counted(
 
     assert result.role is SupplierRole.UNKNOWN
     assert result.reasoning == "INVALID_RESPONSE"
+    assert result.citation_verified is False
     assert classifier.execution_metrics["failure_counts"]["INVALID_RESPONSE"] == 1
 
 

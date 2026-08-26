@@ -7,12 +7,29 @@ import pytest
 from research import (
     benchmark_payload,
     build_parser,
+    citation_verification_summary,
     dry_run_search_payload,
     llm_classifier_benchmark_plan,
     llm_classifier_dry_run_payload,
     load_category,
     status_payload,
 )
+
+
+def test_citation_verification_summary_counts_valid_predictions() -> None:
+    summary = citation_verification_summary(
+        [
+            {"citation_verified": True, "correct": True},
+            {"citation_verified": False, "correct": True},
+            {"citation_verified": False, "correct": False},
+        ]
+    )
+
+    assert summary == {
+        "total": 2,
+        "correct": 1,
+        "summary": "Citações não verificadas: 2. Desses, 1 corretos.",
+    }
 
 
 def test_status_declares_external_integrations_deferred() -> None:

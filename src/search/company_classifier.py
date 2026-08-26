@@ -59,6 +59,7 @@ class ClassificationResult:
     citation: str
     reasoning: str
     needs_review: bool = False
+    citation_verified: bool = True
     evidence_truncated: bool = False
 
     def __post_init__(self) -> None:
@@ -72,6 +73,8 @@ class ClassificationResult:
             raise TypeError("reasoning must be text")
         if not isinstance(self.needs_review, bool):
             raise TypeError("needs_review must be boolean")
+        if not isinstance(self.citation_verified, bool):
+            raise TypeError("citation_verified must be boolean")
         if not isinstance(self.evidence_truncated, bool):
             raise TypeError("evidence_truncated must be boolean")
         if self.confidence is Confidence.LOW and not self.needs_review:
@@ -261,7 +264,7 @@ def classify_with_citation_gate(
     noise_signal: bool = False,
     noise_signal_reason: str = "",
 ) -> ClassificationResult:
-    """Consume a result and apply the citation gate only when required."""
+    """Consume a result and report a failed citation check without changing role."""
 
     result = classifier.classify(
         domain,
@@ -276,8 +279,7 @@ def classify_with_citation_gate(
     if classifier.requires_citation and not result.citation.strip():
         return replace(
             result,
-            role=SupplierRole.UNKNOWN,
-            reasoning="NO_CITATION",
+            citation_verified=False,
         )
     return result
 
@@ -355,6 +357,7 @@ class RuleBasedCompanyClassifier(CompanyClassifier):
             confidence=Confidence.LOW,
             citation="",
             reasoning=reasoning,
+            citation_verified=False,
         )
 
 
@@ -782,6 +785,7 @@ class LLMCompanyClassifier(CompanyClassifier):
                 confidence=Confidence.LOW,
                 citation="",
                 reasoning="CACHE_MISS_DRY_RUN",
+                citation_verified=False,
                 evidence_truncated=budgeted_evidence.evidence_truncated,
             )
 
@@ -832,6 +836,7 @@ class LLMCompanyClassifier(CompanyClassifier):
             confidence=Confidence.LOW,
             citation="",
             reasoning=reason,
+            citation_verified=False,
             evidence_truncated=evidence_truncated,
         )
 
@@ -881,15 +886,27 @@ class LLMCompanyClassifier(CompanyClassifier):
                 evidence_truncated=evidence_truncated,
             )
         if not citation.strip():
-            return self._failure_result(
-                "NO_CITATION",
+            self._failure_counts["NO_CITATION"] += 1
+            return ClassificationResult(
+                role=role,
+                confidence=confidence,
+                citation=citation,
+                reasoning=reasoning,
+                needs_review=needs_review,
+                citation_verified=False,
                 evidence_truncated=evidence_truncated,
             )
         normalized_citation = _normalized_whitespace(citation)
         normalized_content = _normalized_whitespace(extracted_content)
         if normalized_citation not in normalized_content:
-            return self._failure_result(
-                "CITATION_NOT_FOUND",
+            self._failure_counts["CITATION_NOT_FOUND"] += 1
+            return ClassificationResult(
+                role=role,
+                confidence=confidence,
+                citation=citation,
+                reasoning=reasoning,
+                needs_review=needs_review,
+                citation_verified=False,
                 evidence_truncated=evidence_truncated,
             )
         return ClassificationResult(
@@ -898,5 +915,6 @@ class LLMCompanyClassifier(CompanyClassifier):
             citation=citation,
             reasoning=reasoning,
             needs_review=needs_review,
+            citation_verified=True,
             evidence_truncated=evidence_truncated,
         )

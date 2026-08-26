@@ -8,7 +8,7 @@ import sys
 from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import urlsplit
 
 from src.extract.audit import freeze_extract_cache_as_cassette
@@ -1035,6 +1035,7 @@ def llm_classifier_smoke_payload(
                 "citation": result.citation,
                 "reasoning": result.reasoning,
                 "needs_review": result.needs_review,
+                "citation_verified": result.citation_verified,
                 "finishReason": finish_reason,
                 "evidence_truncated": result.evidence_truncated,
                 "cache_key": key,
@@ -1302,6 +1303,7 @@ def llm_classifier_benchmark_payload(
             "citation": result.citation,
             "reasoning": result.reasoning,
             "needs_review": result.needs_review,
+            "citation_verified": result.citation_verified,
             "finishReason": usage["finish_reason"],
             "evidence_truncated": result.evidence_truncated,
             "correct": result.role.value == human_label,
@@ -1371,6 +1373,7 @@ def llm_classifier_benchmark_payload(
             "total_tokens": 0,
         }
     )
+    citation_verification = citation_verification_summary(results)
     return {
         "status": "COMPLETE" if not remaining_domains else "PARTIAL",
         "mode": "live" if live else "offline_cache",
@@ -1406,11 +1409,28 @@ def llm_classifier_benchmark_payload(
                 for row in results
             ),
         },
+        "citation_verification": citation_verification,
         "actual_token_totals": token_totals,
         "provider_usage_this_execution": provider_usage,
         "errors": errors,
         "results": results,
         "fixed_rule_results": fixed_rule_results,
+    }
+
+
+def citation_verification_summary(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    evaluated = list(rows)
+    unverified = [row for row in evaluated if row.get("citation_verified") is False]
+    correct = sum(bool(row.get("correct")) for row in unverified)
+    return {
+        "total": len(unverified),
+        "correct": correct,
+        "summary": (
+            f"Citações não verificadas: {len(unverified)}. "
+            f"Desses, {correct} corretos."
+        ),
     }
 
 
