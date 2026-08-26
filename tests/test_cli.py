@@ -504,3 +504,122 @@ def test_missing_extract_cassettes_are_reported_explicitly(tmp_path) -> None:
         "NOT_AVAILABLE",
     ]
     assert payload["total_extraction_credits_consumed"] == 0
+
+
+def test_llm_benchmark_continues_after_persistent_transient_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import research
+    from src.search.company_classifier import (
+        ClassificationResult,
+        Confidence,
+        DomainClassificationInput,
+        SupplierRole,
+    )
+    from src.search.gemini import GeminiTransientError
+
+    failed = DomainClassificationInput(
+        domain="failed.example",
+        title="Failed",
+        extracted_content="supplier",
+        page_count=1,
+        source_urls=("https://failed.example/product",),
+    )
+    succeeded = DomainClassificationInput(
+        domain="succeeded.example",
+        title="Succeeded",
+        extracted_content="we produce this product at our plant",
+        page_count=1,
+        source_urls=("https://succeeded.example/product",),
+    )
+    plan = [
+        {
+            "case": "A",
+            "category": "test",
+            "product_context": "test product",
+            "domain_input": failed,
+            "human_label": "TRADER",
+            "samples": (1,),
+        },
+        {
+            "case": "A",
+            "category": "test",
+            "product_context": "test product",
+            "domain_input": succeeded,
+            "human_label": "MANUFACTURER",
+            "samples": (1,),
+        },
+    ]
+
+    class FakeProvider:
+        model = research.GEMINI_MODEL
+
+        def __init__(self, *, call_guard) -> None:
+            self.execution_metrics = {
+                "model": self.model,
+                "http_calls": 4,
+                "call_limit": call_guard.max_calls,
+                "retries": 2,
+                "errors_by_type": {"GeminiTransientError": 3},
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "thoughts_tokens": 2,
+                "total_tokens": 17,
+            }
+
+    class FakeClassifier:
+        def __init__(self, provider, cache_dir, *, on_miss, model) -> None:
+            self.provider = provider
+            self.execution_metrics = {
+                "failure_counts": {reason: 0 for reason in research.LLM_FAILURE_REASONS}
+            }
+
+        def classify(self, domain, *args, **kwargs):
+            if domain == failed.domain:
+                raise GeminiTransientError(
+                    "temporary failure",
+                    status_code=503,
+                    response_body="busy",
+                    api_key="not-present",
+                )
+            return ClassificationResult(
+                role=SupplierRole.MANUFACTURER,
+                confidence=Confidence.HIGH,
+                citation="we produce this product at our plant",
+                reasoning="production evidence",
+            )
+
+    monkeypatch.setattr(research, "llm_classifier_benchmark_plan", lambda: (plan, []))
+    monkeypatch.setattr(research, "GeminiLLMProvider", FakeProvider)
+    monkeypatch.setattr(research, "LLMCompanyClassifier", FakeClassifier)
+    monkeypatch.setattr(
+        research,
+        "read_llm_cache",
+        lambda *args, **kwargs: {
+            "usage_metadata": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "thoughts_tokens": 2,
+                "total_tokens": 17,
+                "finish_reason": "STOP",
+            }
+        },
+    )
+
+    payload = research.llm_classifier_benchmark_payload(
+        live=True,
+        cache_dir=tmp_path,
+    )
+
+    assert payload["completed_domains"] == 1
+    assert payload["remaining_domains"] == ["failed.example"]
+    assert payload["domain_failures"] == [
+        {
+            "domain": "failed.example",
+            "type": "TRANSIENT_ERROR",
+            "status_code": 503,
+            "response_body": "busy",
+        }
+    ]
+    assert [row["domain"] for row in payload["results"]] == ["succeeded.example"]

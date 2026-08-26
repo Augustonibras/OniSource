@@ -55,6 +55,7 @@ from src.search.gemini import (
     GEMINI_MODEL,
     MAX_LLM_CALLS,
     GeminiLLMProvider,
+    GeminiTimeoutError,
     GeminiTransientError,
     LLMCallGuard,
     LLMCallLimitError,
@@ -1223,6 +1224,7 @@ def llm_classifier_benchmark_payload(
         "total_tokens": 0,
     }
     stop_reason: dict[str, object] | None = None
+    domain_failures: list[dict[str, object]] = []
 
     for item in plan:
         domain_input = item["domain_input"]
@@ -1247,14 +1249,20 @@ def llm_classifier_benchmark_payload(
                 noise_signal_reason=noise_reason,
             )
         except GeminiTransientError as error:
-            if error.status_code != 429:
-                raise
-            stop_reason = {
-                "type": "RATE_LIMIT",
+            domain_failures.append({
+                "domain": domain_input.domain,
+                "type": "TRANSIENT_ERROR",
                 "status_code": error.status_code,
                 "response_body": error.response_body,
-            }
-            break
+            })
+            continue
+        except GeminiTimeoutError as error:
+            domain_failures.append({
+                "domain": domain_input.domain,
+                "type": "TIMEOUT",
+                "message": str(error),
+            })
+            continue
         except LLMCallLimitError as error:
             stop_reason = {
                 "type": "CALL_LIMIT",
@@ -1333,13 +1341,14 @@ def llm_classifier_benchmark_payload(
             }
         )
 
-    remaining_items = plan[len(results) :]
+    completed_domain_names = {str(row["domain"]) for row in results}
     remaining_domains = []
-    for item in remaining_items:
+    for item in plan:
         domain_input = item["domain_input"]
         if not isinstance(domain_input, DomainClassificationInput):
             raise TypeError("LLM benchmark remaining domain input is invalid")
-        remaining_domains.append(domain_input.domain)
+        if domain_input.domain not in completed_domain_names:
+            remaining_domains.append(domain_input.domain)
     llm_metrics = classification_metric_slices(
         results,
         prompt_development_domains,
@@ -1387,6 +1396,7 @@ def llm_classifier_benchmark_payload(
         "remaining_domains": remaining_domains,
         "missing_extraction": missing_extraction,
         "stop_reason": stop_reason,
+        "domain_failures": domain_failures,
         "prompt_development_domains": sorted(prompt_development_domains),
         "llm_metrics": llm_metrics,
         "fixed_rule_metrics": fixed_rule_metrics,
