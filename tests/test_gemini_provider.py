@@ -39,7 +39,7 @@ def test_gemini_provider_uses_approved_model_and_api_version() -> None:
         "gemini-3.6-flash:generateContent"
     )
     assert GEMINI_MAX_OUTPUT_TOKENS == 2048
-    assert MAX_LLM_CALLS == 80
+    assert MAX_LLM_CALLS == 95
 
 
 def _gemini_response(model_text: str) -> dict[str, object]:
