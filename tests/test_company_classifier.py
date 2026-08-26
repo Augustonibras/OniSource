@@ -649,19 +649,26 @@ def test_prompt_uses_human_taxonomy_product_context_and_strict_json() -> None:
     assert "published on the company's own site" in prompt
     assert "A trading company that publishes a ranking remains a trading company" in prompt
     assert "classify according to the commercial content" in prompt
-    assert "Decision rules (apply in this exact order)" in prompt
-    assert "Selling a third-party brand is decisive" in prompt
+    assert "Role precedence (apply before the numbered commercial-role rules)" in prompt
+    assert "Once the DISTRIBUTOR rule matches" in prompt
+    assert '"distributor", "dealer", "reseller", "authorized distributor"' in prompt
+    assert "warehousing or fulfillment" in prompt
+    assert "A distributor has a public identity tied to reselling identifiable brands" in prompt
+    assert "Decision rules (apply in this exact order after the role-precedence checks)" in prompt
+    assert "third-party brands is decisive for TRADER" in prompt
     assert "Multiple self-declared roles mean TRADER" in prompt
-    assert "An active own-production verb is positive evidence" in prompt
-    assert '"Ereztech manufactures and sells this product"' in prompt
-    assert '"ICL is a leading producer of phosphoric acid"' in prompt
+    assert "MANUFACTURER requires both an active first-person own-production verb" in prompt
+    assert "production capacity stated numerically" in prompt
+    assert '"WOTAIchem operates three dedicated titanium dioxide manufacturing plants in China"' in prompt
+    assert '"ICL operates phosphoric acid plants in Israel and China with combined capacity of 1.2M tons"' in prompt
+    assert '"Veeransh Chemicals manufactures and supplies Phosphoric Acid to Vietnam"' in prompt
+    assert '"SNDB uses state-of-the-art manufacturing processes such as the wet process"' in prompt
     assert "A generic manufacturer label without an active production verb" in prompt
-    assert "Technical process or plant evidence reinforces MANUFACTURER" in prompt
     assert "The intermediation fallback is subordinate" in prompt
-    assert "only when there is no active own-production verb" in prompt
-    assert "active own-production verb but no supporting process" in prompt
+    assert "specific own-facility evidence required by rule 3" in prompt
+    assert "classify the entity as TRADER and set needs_review to true" in prompt
     assert "does not need to prove the exact role" in prompt
     assert "needs_review must be true" in prompt
     assert MAX_CONTENT_CHARS == 40_000
     assert CONTENT_BUDGET_POLICY == "per_page_equal_quota_redistribute_v1"
-    assert PROMPT_VERSION == "v8"
+    assert PROMPT_VERSION == "v9"

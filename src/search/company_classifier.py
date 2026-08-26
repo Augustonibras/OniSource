@@ -15,7 +15,7 @@ from .company_evaluation import build_company_classification_report
 from .models import SearchResult
 
 
-PROMPT_VERSION = "v8"
+PROMPT_VERSION = "v9"
 MAX_CONTENT_CHARS = 40_000
 CONTENT_BUDGET_POLICY = "per_page_equal_quota_redistribute_v1"
 DEFAULT_LLM_CACHE_DIR = (
@@ -442,15 +442,22 @@ Classification unit:
 - An article, blog post, comparison, or ranking published on the company's own site does not make the entity MARKETPLACE_OR_DIRECTORY or NOT_A_COMPANY. Those classes describe the nature of the entity: a marketplace or directory exists to list third parties, while NOT_A_COMPANY is a news outlet, market-research consultancy, government body, or association. A trading company that publishes a ranking remains a trading company.
 - When the domain content is predominantly commercial, such as products, quotations, and sales contacts, and only part is editorial, classify according to the commercial content.
 
-Decision rules (apply in this exact order):
-1. Selling a third-party brand is decisive. If the entity resells, represents, or acts as an agent for third-party brands, such as "agents for different brands", "we supply Lomon, Taihai, panzhihua", or "LOMON Brand", the role is TRADER without exception, even if the entity also calls itself a manufacturer.
+Role precedence (apply before the numbered commercial-role rules):
+- First decide whether the entity itself is NOT_A_COMPANY or MARKETPLACE_OR_DIRECTORY. These entity-nature classes take precedence over every commercial role.
+- Next decide DISTRIBUTOR. Once the DISTRIBUTOR rule matches, do not apply the TRADER fallback rules below.
+- An entity is DISTRIBUTOR when any of these conditions is true: it explicitly identifies itself as a "distributor", "dealer", "reseller", "authorized distributor", or equivalent; it sells named products from identifiable manufacturer brands, such as "Spectrum Chemical graded products" or "we distribute Brand X", without claiming own production; or it operates as a distribution or logistics arm, including warehousing or fulfillment, for third-party products.
+- DISTRIBUTOR is not TRADER. A distributor has a public identity tied to reselling identifiable brands. A trader buys and resells without a public brand affiliation or under a generic own brand.
+
+Decision rules (apply in this exact order after the role-precedence checks):
+1. Selling, representing, or acting as an agent for third-party brands is decisive for TRADER when the DISTRIBUTOR rule above does not apply. Examples include "agents for different brands", "we supply Lomon, Taihai, panzhihua", and "LOMON Brand". This remains TRADER even if the entity also calls itself a manufacturer.
 2. Multiple self-declared roles mean TRADER. If the entity describes itself simultaneously as a manufacturer and as a trading company, agent, or distributor, such as "Business Type: Manufacturer, Distributor/Wholesaler, Agent, Trade Company", and there is no own-production proof, the role is TRADER.
-3. An active own-production verb is positive evidence and takes precedence over the intermediation fallback in rule 4. When the entity states in its own voice that it produces the product using an active production verb, such as "manufactures", "we produce", "is a producer of", or "operates plants producing", and there is no evidence of selling a third-party brand, the role is MANUFACTURER.
-   - Active production verb means MANUFACTURER, for example "Ereztech manufactures and sells this product" or "ICL is a leading producer of phosphoric acid".
+3. MANUFACTURER requires both an active first-person own-production verb and specific evidence of the entity's own facilities. The verb may be "we manufacture", "we produce", "is a producer of", or "operates plants producing". The facility evidence must include at least one of: the name or location of an owned factory or plant; production capacity stated numerically in tons, MT, or volume; or a detailed production-process description explicitly attributed to the entity's own facilities. There must also be no evidence of selling a third-party brand.
+   - MANUFACTURER: "WOTAIchem operates three dedicated titanium dioxide manufacturing plants in China" because it identifies plants and process. "ICL operates phosphoric acid plants in Israel and China with combined capacity of 1.2M tons" because it provides locations and capacity.
+   - TRADER with needs_review true: "Veeransh Chemicals manufactures and supplies Phosphoric Acid to Vietnam" because it has a verb but no plant or capacity. "SNDB uses state-of-the-art manufacturing processes such as the wet process" because the generic process is not attributed to its own facility.
+   - TRADER without needs_review: third-party brand resale or multiple self-declared roles such as manufacturer plus trading company or agent.
    - A generic manufacturer label without an active production verb is not enough, for example "we are a professional manufacturer" or "leading manufacturer in China".
-   - Technical process or plant evidence reinforces MANUFACTURER, for example "operates three plants using sulfate and chloride process".
-4. The intermediation fallback is subordinate to rule 3. "Commercializing without proof of production is intermediation" applies only when there is no active own-production verb. It must never override a qualifying production statement under rule 3. When the entity commercializes the product without either an active own-production verb or other own-production evidence, classify it as TRADER rather than UNCERTAIN.
-5. Set needs_review to true when there is an active own-production verb but no supporting process, plant, or capacity description.
+4. The intermediation fallback is subordinate to rule 3. Commercializing without proof of production is intermediation when the active production verb and specific own-facility evidence required by rule 3 are not both present. Classify such an entity as TRADER rather than UNCERTAIN.
+5. When an active first-person production verb exists but the required specific plant, process, or numeric capacity evidence is absent, classify the entity as TRADER and set needs_review to true.
 
 Review rule:
 - needs_review must be true whenever decision rule 5 applies or confidence is LOW; otherwise it may be false.
