@@ -20,3 +20,12 @@ test("removes text before and after the JSON array", () => {
 test("returns null when no JSON array is present", () => {
   assert.equal(extractJsonArray("No suppliers found."), null);
 });
+
+test("recovers complete suppliers from a truncated JSON array", () => {
+  assert.equal(
+    extractJsonArray(
+      '[{"company_name":"Complete"},{"company_name":"Truncated"',
+    ),
+    '[{"company_name":"Complete"}]',
+  );
+});
