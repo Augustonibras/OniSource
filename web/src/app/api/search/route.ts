@@ -1,3 +1,5 @@
+import { resolveMP } from "@/data/mp-codes";
+
 import { createServerSupabaseClient } from "../../../lib/supabase-server";
 import { extractJsonArray } from "../../../lib/gemini-results";
 
@@ -67,10 +69,19 @@ function formatCountries(countries: string[], fallback: string) {
   return countries.length > 0 ? countries.join(", ") : fallback;
 }
 
-function buildPrompt(query: string, filters: Required<SearchFilters>) {
+function buildPrompt(
+  query: string,
+  filters: Required<SearchFilters>,
+  mpCode: number | null,
+) {
+  const mpContext =
+    mpCode === null
+      ? ""
+      : `\nThe user searched by internal code MP ${mpCode}, which corresponds to: ${query}. Search for suppliers of this product.`;
+
   return `You are OniSource, a chemical sourcing intelligence engine.
 
-The user is searching for suppliers of: "${query}"
+The user is searching for suppliers of: "${query}"${mpContext}
 
 Filters applied:
 - Exclude countries: ${formatCountries(filters.excludeCountries, "none")}
@@ -168,7 +179,8 @@ export async function POST(request: Request) {
     return errorResponse("GEMINI_API_KEY was not found in the environment.", 500);
   }
 
-  const prompt = buildPrompt(query, filters);
+  const { resolved, mpCode } = resolveMP(query);
+  const prompt = buildPrompt(resolved, filters, mpCode);
   let geminiData: GeminiResponse;
   let results: SupplierResult[];
 
@@ -243,5 +255,10 @@ export async function POST(request: Request) {
     return errorResponse("Unable to save the search result.", 500);
   }
 
-  return Response.json({ results, tokens_used: tokensUsed });
+  return Response.json({
+    results,
+    tokens_used: tokensUsed,
+    resolvedQuery: resolved,
+    mpCode,
+  });
 }

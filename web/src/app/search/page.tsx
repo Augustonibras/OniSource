@@ -42,6 +42,8 @@ interface SearchFilters {
 interface SearchApiResponse {
   results?: SupplierResult[];
   tokens_used?: number;
+  resolvedQuery?: string;
+  mpCode?: number | null;
   error?: string;
 }
 
@@ -314,6 +316,8 @@ export default function SearchPage() {
   const [results, setResults] = useState<SupplierResult[] | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
+  const [resolvedQuery, setResolvedQuery] = useState("");
+  const [submittedMpCode, setSubmittedMpCode] = useState<number | null>(null);
   const [submittedFilters, setSubmittedFilters] = useState<SearchFilters | null>(
     null,
   );
@@ -390,6 +394,8 @@ export default function SearchPage() {
       }
 
       setSubmittedQuery(normalizedQuery);
+      setResolvedQuery(data.resolvedQuery ?? normalizedQuery);
+      setSubmittedMpCode(data.mpCode ?? null);
       setSubmittedFilters(filters);
       setResults(data.results);
     } catch {
@@ -624,6 +630,11 @@ export default function SearchPage() {
 
         {!isLoading && results ? (
           <section className="mt-12 space-y-10">
+            {submittedMpCode !== null && resolvedQuery !== submittedQuery ? (
+              <div className="inline-flex rounded-full border border-brand-blue-300 bg-white px-4 py-2 text-sm font-semibold text-brand-blue-800 shadow-sm">
+                Código MP {submittedMpCode} → {resolvedQuery}
+              </div>
+            ) : null}
             <div className="border-b border-brand-blue-300 pb-4">
               <p className="font-semibold text-brand-blue-900">
                 {results.length} resultados encontrados ({counts.MANUFACTURER}{" "}
