@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   FormEvent,
@@ -10,6 +11,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+
+import { supabase } from "../../lib/supabase";
 
 const SESSION_KEY = "onisource_session";
 
@@ -315,6 +318,11 @@ export default function SearchPage() {
     null,
   );
   const [copied, setCopied] = useState(false);
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [reportMessage, setReportMessage] = useState("");
+  const [reportError, setReportError] = useState("");
+  const [isReportSubmitting, setIsReportSubmitting] = useState(false);
+  const [reportSuccess, setReportSuccess] = useState(false);
 
   useEffect(() => {
     if (!session) {
@@ -402,6 +410,36 @@ export default function SearchPage() {
     window.setTimeout(() => setCopied(false), 2000);
   }
 
+  async function handleReportSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) {
+      return;
+    }
+    const message = reportMessage.trim();
+    if (message.length < 10) {
+      setReportError("Descreva o problema com pelo menos 10 caracteres.");
+      return;
+    }
+
+    setIsReportSubmitting(true);
+    setReportError("");
+    const { error } = await supabase.from("reports").insert({
+      user_email: session.email,
+      message,
+    });
+    setIsReportSubmitting(false);
+
+    if (error) {
+      setReportError("Não foi possível enviar o problema. Tente novamente.");
+      return;
+    }
+
+    setReportMessage("");
+    setIsReportModalOpen(false);
+    setReportSuccess(true);
+    window.setTimeout(() => setReportSuccess(false), 3000);
+  }
+
   const counts = useMemo(
     () => ({
       MANUFACTURER:
@@ -427,7 +465,7 @@ export default function SearchPage() {
   }
 
   return (
-    <div className="min-h-screen bg-brand-blue-50 text-gray-900">
+    <div className="flex min-h-screen flex-col bg-brand-blue-50 text-gray-900">
       <header className="border-b border-gray-200 bg-white">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-2.5">
@@ -443,6 +481,14 @@ export default function SearchPage() {
             </span>
           </div>
           <div className="flex items-center gap-3 sm:gap-5">
+            {session.role === "admin" ? (
+              <Link
+                href="/admin"
+                className="rounded-lg px-2 py-2 text-sm font-semibold text-brand-blue-700 transition hover:bg-brand-blue-50 hover:text-brand-blue-900"
+              >
+                Painel Admin
+              </Link>
+            ) : null}
             <span className="hidden text-sm text-gray-500 sm:inline">
               {session.email}
             </span>
@@ -457,7 +503,7 @@ export default function SearchPage() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 lg:px-8 lg:py-14">
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-10 sm:px-6 lg:px-8 lg:py-14">
         <section className="mx-auto max-w-4xl">
           <h1 className="text-2xl font-semibold text-brand-blue-800">
             O que você está procurando?
@@ -692,6 +738,96 @@ export default function SearchPage() {
           </section>
         ) : null}
       </main>
+
+      <footer className="sticky bottom-0 z-20 border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl justify-end">
+          <button
+            type="button"
+            onClick={() => {
+              setReportError("");
+              setIsReportModalOpen(true);
+            }}
+            className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition hover:bg-brand-blue-50 hover:text-brand-blue-800 focus:outline-none focus:ring-4 focus:ring-brand-blue-300/40"
+          >
+            <span aria-hidden="true">⚠️</span>
+            Reportar Problema
+          </button>
+        </div>
+      </footer>
+
+      {isReportModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-brand-blue-900/40 px-4 backdrop-blur-sm"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target && !isReportSubmitting) {
+              setIsReportModalOpen(false);
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="report-dialog-title"
+            className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            <h2
+              id="report-dialog-title"
+              className="text-xl font-semibold text-brand-blue-900"
+            >
+              Reportar Problema
+            </h2>
+            <form onSubmit={handleReportSubmit} className="mt-5">
+              <label
+                htmlFor="report-message"
+                className="mb-2 block text-sm font-medium text-gray-700"
+              >
+                Descreva o problema encontrado
+              </label>
+              <textarea
+                id="report-message"
+                required
+                minLength={10}
+                value={reportMessage}
+                onChange={(event) => setReportMessage(event.target.value)}
+                className="h-36 w-full resize-none rounded-lg border border-gray-300 p-3 text-sm text-gray-900 outline-none transition focus:border-brand-blue-700 focus:ring-4 focus:ring-brand-blue-300/30"
+                placeholder="Descreva o que aconteceu e o resultado esperado."
+              />
+              {reportError ? (
+                <p className="mt-2 text-sm text-red-600" role="alert">
+                  {reportError}
+                </p>
+              ) : null}
+              <div className="mt-5 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsReportModalOpen(false)}
+                  disabled={isReportSubmitting}
+                  className="rounded-lg px-4 py-2 text-sm font-semibold text-gray-600 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isReportSubmitting || reportMessage.trim().length < 10}
+                  className="rounded-lg bg-brand-blue-800 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-blue-700 focus:outline-none focus:ring-4 focus:ring-brand-blue-300 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isReportSubmitting ? "Enviando..." : "Enviar"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
+
+      {reportSuccess ? (
+        <div
+          role="status"
+          className="fixed bottom-20 right-4 z-50 rounded-lg bg-emerald-700 px-4 py-3 text-sm font-medium text-white shadow-lg sm:right-6"
+        >
+          Problema reportado. Obrigado!
+        </div>
+      ) : null}
     </div>
   );
 }
