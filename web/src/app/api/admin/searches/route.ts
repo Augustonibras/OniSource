@@ -3,6 +3,7 @@ import { apiError, authorizeAdmin } from "../../../../lib/admin";
 export const runtime = "nodejs";
 
 const PAGE_SIZE = 20;
+const RAW_DATA_PAGE_SIZE = 1000;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 function parsePage(value: string | null) {
@@ -60,24 +61,36 @@ export async function GET(request: Request) {
     );
   }
 
-  const [{ data, error, count }, usersResult] = await Promise.all([
-    searchesQuery,
-    authorization.supabase
-      .from("searches")
-      .select("user_email,total_searches:id.count()")
-      .order("user_email", { ascending: true }),
-  ]);
+  const { data, error, count } = await searchesQuery;
 
   if (error) {
     return apiError("Unable to load searches.", 500);
   }
-  if (usersResult.error) {
-    return apiError("Unable to load search users.", 500);
+
+  const userEmails: string[] = [];
+  for (let from = 0; ; from += RAW_DATA_PAGE_SIZE) {
+    const { data: userRows, error: usersError } = await authorization.supabase
+      .from("searches")
+      .select("user_email")
+      .order("user_email", { ascending: true })
+      .range(from, from + RAW_DATA_PAGE_SIZE - 1);
+
+    if (usersError) {
+      return apiError("Unable to load search users.", 500);
+    }
+
+    userEmails.push(
+      ...(userRows ?? [])
+        .map((row) => String(row.user_email ?? ""))
+        .filter(Boolean),
+    );
+
+    if ((userRows ?? []).length < RAW_DATA_PAGE_SIZE) {
+      break;
+    }
   }
 
-  const users = (usersResult.data ?? [])
-    .map((row) => String(row.user_email ?? ""))
-    .filter(Boolean);
+  const users = [...new Set(userEmails)];
 
   return Response.json({
     searches: data ?? [],

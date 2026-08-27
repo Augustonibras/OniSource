@@ -2,16 +2,12 @@ import { apiError, authorizeAdmin } from "../../../../lib/admin";
 
 export const runtime = "nodejs";
 
-interface UsageAggregateRow {
-  user_email?: unknown;
-  total_searches?: unknown;
-  total_tokens?: unknown;
-  last_search?: unknown;
-}
+const RAW_DATA_PAGE_SIZE = 1000;
 
-interface GlobalAggregateRow {
-  total_searches?: unknown;
-  total_tokens?: unknown;
+interface SearchUsageRow {
+  user_email: string | null;
+  tokens_used: number | null;
+  created_at: string | null;
 }
 
 export async function GET(request: Request) {
@@ -21,39 +17,71 @@ export async function GET(request: Request) {
     return authorization.response;
   }
 
-  const [usageResult, totalsResult] = await Promise.all([
-    authorization.supabase
+  const rows: SearchUsageRow[] = [];
+  for (let from = 0; ; from += RAW_DATA_PAGE_SIZE) {
+    const { data, error } = await authorization.supabase
       .from("searches")
-      .select(
-        "user_email,total_searches:id.count(),total_tokens:tokens_used.sum(),last_search:created_at.max()",
-      )
-      .order("total_tokens", { ascending: false }),
-    authorization.supabase
-      .from("searches")
-      .select("total_searches:id.count(),total_tokens:tokens_used.sum()")
-      .maybeSingle(),
-  ]);
+      .select("user_email,tokens_used,created_at")
+      .order("created_at", { ascending: false })
+      .range(from, from + RAW_DATA_PAGE_SIZE - 1);
 
-  if (usageResult.error || totalsResult.error) {
-    return apiError(
-      "Unable to aggregate token usage. Confirm that PostgREST aggregates are enabled.",
-      500,
-    );
+    if (error) {
+      return apiError("Unable to load token usage.", 500);
+    }
+
+    rows.push(...((data ?? []) as SearchUsageRow[]));
+
+    if ((data ?? []).length < RAW_DATA_PAGE_SIZE) {
+      break;
+    }
   }
 
-  const usage = ((usageResult.data ?? []) as UsageAggregateRow[]).map((row) => ({
-    user_email: String(row.user_email ?? ""),
-    total_searches: Number(row.total_searches ?? 0),
-    total_tokens: Number(row.total_tokens ?? 0),
-    last_search: row.last_search ? String(row.last_search) : null,
-  }));
-  const totals = (totalsResult.data ?? {}) as GlobalAggregateRow;
+  const usageByUser = new Map<
+    string,
+    {
+      user_email: string;
+      total_searches: number;
+      total_tokens: number;
+      last_search: string | null;
+    }
+  >();
+
+  for (const row of rows) {
+    const userEmail = String(row.user_email ?? "");
+    if (!userEmail) {
+      continue;
+    }
+
+    const current = usageByUser.get(userEmail) ?? {
+      user_email: userEmail,
+      total_searches: 0,
+      total_tokens: 0,
+      last_search: null,
+    };
+    current.total_searches += 1;
+    current.total_tokens += Number(row.tokens_used ?? 0);
+    if (
+      row.created_at &&
+      (!current.last_search || row.created_at > current.last_search)
+    ) {
+      current.last_search = row.created_at;
+    }
+    usageByUser.set(userEmail, current);
+  }
+
+  const usage = [...usageByUser.values()].sort(
+    (left, right) => right.total_tokens - left.total_tokens,
+  );
+  const totalTokens = rows.reduce(
+    (total, row) => total + Number(row.tokens_used ?? 0),
+    0,
+  );
 
   return Response.json({
     usage,
     totals: {
-      total_searches: Number(totals.total_searches ?? 0),
-      total_tokens: Number(totals.total_tokens ?? 0),
+      total_searches: rows.length,
+      total_tokens: totalTokens,
       active_users: usage.length,
     },
   });

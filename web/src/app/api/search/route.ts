@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from "../../../lib/supabase-server";
 export const runtime = "nodejs";
 
 const GEMINI_ENDPOINT =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
 
 const ROLES = ["MANUFACTURER", "DISTRIBUTOR", "TRADER"] as const;
 const CONFIDENCE_LEVELS = ["HIGH", "MEDIUM", "LOW"] as const;
