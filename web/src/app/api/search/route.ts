@@ -1,4 +1,5 @@
 import { createServerSupabaseClient } from "../../../lib/supabase-server";
+import { extractJsonArray } from "../../../lib/gemini-results";
 
 export const runtime = "nodejs";
 
@@ -44,8 +45,11 @@ interface GeminiResponse {
   };
 }
 
-function errorResponse(error: string, status: number) {
-  return Response.json({ error, code: status }, { status });
+function errorResponse(error: string, status: number, details?: string) {
+  return Response.json(
+    { error, code: status, ...(details === undefined ? {} : { details }) },
+    { status },
+  );
 }
 
 function normalizeCountries(value: unknown): string[] {
@@ -87,12 +91,6 @@ Instructions:
 [{"company_name":"...","website":"...","country":"...","role":"MANUFACTURER","confidence":"HIGH","notes":"..."}]`;
 }
 
-function stripMarkdownFence(value: string) {
-  const trimmed = value.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return fenced ? fenced[1].trim() : trimmed;
-}
-
 function isSupplierResult(value: unknown): value is SupplierResult {
   if (!value || typeof value !== "object") {
     return false;
@@ -110,11 +108,21 @@ function isSupplierResult(value: unknown): value is SupplierResult {
 }
 
 function parseResults(text: string): SupplierResult[] {
-  const parsed: unknown = JSON.parse(stripMarkdownFence(text));
+  const jsonArray = extractJsonArray(text);
+  if (!jsonArray) {
+    throw new Error("Gemini response does not contain a JSON array.");
+  }
+
+  const parsed: unknown = JSON.parse(jsonArray);
   if (!Array.isArray(parsed) || !parsed.every(isSupplierResult)) {
     throw new Error("Gemini returned an invalid supplier result array.");
   }
   return parsed;
+}
+
+function sanitizedErrorMessage(error: unknown, apiKey: string) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replaceAll(apiKey, "***");
 }
 
 export async function POST(request: Request) {
@@ -161,12 +169,13 @@ export async function POST(request: Request) {
   }
 
   const prompt = buildPrompt(query, filters);
-  let geminiResponse: Response;
+  let geminiData: GeminiResponse;
+  let results: SupplierResult[];
 
   try {
     const endpoint = new URL(GEMINI_ENDPOINT);
     endpoint.searchParams.set("key", apiKey);
-    geminiResponse = await fetch(endpoint, {
+    const geminiResponse = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -174,32 +183,43 @@ export async function POST(request: Request) {
         generationConfig: { maxOutputTokens: 2048 },
       }),
     });
-  } catch {
-    return errorResponse("Unable to reach Gemini.", 502);
-  }
 
-  if (!geminiResponse.ok) {
-    if (geminiResponse.status === 429) {
-      return errorResponse("Gemini rate limit exceeded.", 429);
+    if (!geminiResponse.ok) {
+      if (geminiResponse.status === 429) {
+        return errorResponse("Gemini rate limit exceeded.", 429);
+      }
+      if (geminiResponse.status === 503) {
+        return errorResponse("Gemini is temporarily unavailable.", 503);
+      }
+      return errorResponse("Gemini request failed.", geminiResponse.status);
     }
-    if (geminiResponse.status === 503) {
-      return errorResponse("Gemini is temporarily unavailable.", 503);
-    }
-    return errorResponse("Gemini request failed.", geminiResponse.status);
-  }
 
-  let geminiData: GeminiResponse;
-  let results: SupplierResult[];
-
-  try {
     geminiData = (await geminiResponse.json()) as GeminiResponse;
-    const responseText =
-      geminiData.candidates?.[0]?.content?.parts
-        ?.map((part) => part.text ?? "")
-        .join("") ?? "";
-    results = parseResults(responseText);
-  } catch {
-    return errorResponse("Gemini returned an invalid JSON response.", 502);
+    const parts = geminiData.candidates?.[0]?.content?.parts;
+    if (!parts || parts.length === 0 || !parts[0]?.text?.trim()) {
+      return errorResponse(
+        "O modelo não retornou resultados. Tente uma busca mais específica.",
+        422,
+      );
+    }
+
+    const responseText = parts[0].text;
+
+    try {
+      results = parseResults(responseText);
+    } catch {
+      return errorResponse(
+        "Não foi possível processar a resposta. Tente reformular a busca.",
+        422,
+        responseText.slice(0, 200),
+      );
+    }
+  } catch (error) {
+    return errorResponse(
+      "Erro interno na busca.",
+      500,
+      sanitizedErrorMessage(error, apiKey),
+    );
   }
 
   const tokensUsed =

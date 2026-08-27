@@ -14,7 +14,7 @@ function parsePage(value: string | null) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-export async function GET(request: Request) {
+async function loadSearches(request: Request) {
   const searchParams = new URL(request.url).searchParams;
   const authorization = await authorizeAdmin(searchParams.get("userEmail"));
   if (!authorization.authorized) {
@@ -99,4 +99,12 @@ export async function GET(request: Request) {
     page,
     pageSize: PAGE_SIZE,
   });
+}
+
+export async function GET(request: Request) {
+  try {
+    return await loadSearches(request);
+  } catch {
+    return apiError("Unexpected error while loading searches.", 500);
+  }
 }
