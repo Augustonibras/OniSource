@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="disc" x1="0.10" y1="0.04" x2="0.90" y2="0.96">
+      <stop offset="0" stop-color="#C9DCF7"/>
+      <stop offset="0.28" stop-color="#85A3E3"/>
+      <stop offset="0.62" stop-color="#2B4FAE"/>
+      <stop offset="1" stop-color="#16327F"/>
+    </linearGradient>
+    <linearGradient id="dia" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#FFE39B"/>
+      <stop offset="0.48" stop-color="#FDC02E"/>
+      <stop offset="1" stop-color="#EFA10C"/>
+    </linearGradient>
+    <radialGradient id="dot" cx="0.34" cy="0.28" r="0.85">
+      <stop offset="0" stop-color="#8FA9EC"/>
+      <stop offset="1" stop-color="#16327F"/>
+    </radialGradient>
+  </defs>
+  <circle cx="200" cy="200" r="168" fill="url(#disc)"/>
+  <circle cx="200" cy="200" r="167" fill="none" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="2"/>
+  <rect x="97.5" y="97.5" width="205" height="205" rx="36" ry="36" transform="rotate(45 200 200)" fill="url(#dia)"/>
+  <circle cx="200" cy="200" r="34" fill="url(#dot)"/>
+</svg>
