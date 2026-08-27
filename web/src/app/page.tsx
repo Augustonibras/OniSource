@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { AlertCircle } from "lucide-react";
 
 import { supabase } from "../lib/supabase";
 
@@ -42,20 +43,20 @@ export default function Home() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-brand-blue-50 px-6 py-12">
-      <section className="w-full max-w-md rounded-2xl border border-brand-blue-300/50 bg-white px-8 py-10 shadow-[0_24px_70px_rgba(22,50,127,0.12)] sm:px-10">
+    <main className="flex min-h-screen items-center justify-center bg-[#F8F9FC] px-6 py-12">
+      <section className="w-full max-w-md rounded-xl border border-gray-200 bg-white px-8 py-10 shadow-sm sm:px-10">
         <div className="flex flex-col items-center text-center">
           <Image
             src="/onisource-symbol.svg"
             alt="Símbolo OniSource"
-            width={80}
-            height={80}
+            width={72}
+            height={72}
             priority
           />
-          <h1 className="mt-5 text-3xl font-bold text-brand-blue-800">
+          <h1 className="mt-5 text-2xl font-semibold text-[#16327F]">
             OniSource
           </h1>
-          <p className="mt-2 text-sm uppercase tracking-widest text-gray-500">
+          <p className="mt-2 text-xs uppercase tracking-[0.2em] text-gray-500">
             Inteligência de Sourcing
           </p>
         </div>
@@ -76,11 +77,12 @@ export default function Home() {
               placeholder="Seu email corporativo"
               aria-invalid={Boolean(errorMessage)}
               aria-describedby={errorMessage ? "email-error" : undefined}
-              className="h-12 w-full rounded-lg border border-gray-300 bg-white px-4 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-brand-blue-700 focus:ring-4 focus:ring-brand-blue-300/40"
+              className="h-12 w-full rounded-lg border border-gray-300 bg-white px-4 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-[#2B4FAE] focus:ring-1 focus:ring-[#2B4FAE]"
             />
             {errorMessage ? (
-              <p id="email-error" className="mt-2 text-sm text-red-600">
-                {errorMessage}
+              <p id="email-error" className="mt-2 flex items-start gap-2 text-sm text-red-600">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>{errorMessage}</span>
               </p>
             ) : null}
           </div>
@@ -88,7 +90,7 @@ export default function Home() {
           <button
             type="submit"
             disabled={isLoading}
-            className="flex h-12 w-full items-center justify-center rounded-lg bg-brand-blue-800 px-4 font-semibold text-white transition-colors hover:bg-brand-blue-700 focus:outline-none focus:ring-4 focus:ring-brand-blue-300 disabled:cursor-not-allowed disabled:opacity-70"
+            className="flex h-12 w-full items-center justify-center rounded-lg bg-[#16327F] px-4 font-medium text-white transition-colors hover:bg-[#2B4FAE] focus:outline-none focus:ring-2 focus:ring-[#85A3E3] disabled:cursor-not-allowed disabled:opacity-70"
           >
             {isLoading ? "Validando..." : "Entrar"}
           </button>

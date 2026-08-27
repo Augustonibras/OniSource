@@ -4,6 +4,15 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
+  BarChart3,
+  ChevronLeft,
+  ChevronRight,
+  History,
+  LogOut,
+  type LucideIcon,
+} from "lucide-react";
+import {
   useEffect,
   useMemo,
   useState,
@@ -69,10 +78,10 @@ interface ReportsResponse {
   error?: string;
 }
 
-const TABS: Array<{ id: AdminTab; label: string; icon: string }> = [
-  { id: "searches", label: "Histórico de Buscas", icon: "🔎" },
-  { id: "tokens", label: "Uso de Tokens", icon: "◈" },
-  { id: "reports", label: "Problemas Reportados", icon: "⚠️" },
+const TABS: Array<{ id: AdminTab; label: string; icon: LucideIcon }> = [
+  { id: "searches", label: "Histórico de Buscas", icon: History },
+  { id: "tokens", label: "Uso de Tokens", icon: BarChart3 },
+  { id: "reports", label: "Problemas Reportados", icon: AlertTriangle },
 ];
 
 function subscribeToSession() {
@@ -353,25 +362,25 @@ export default function AdminPage() {
 
   if (!isAdmin || !session) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-brand-blue-50">
+      <main className="flex min-h-screen items-center justify-center bg-[#F8F9FC]">
         <p className="text-sm text-gray-500">Verificando acesso...</p>
       </main>
     );
   }
 
   return (
-    <div className="min-h-screen bg-brand-blue-50 text-gray-900">
+    <div className="min-h-screen bg-[#F8F9FC] text-gray-800">
       <header className="border-b border-gray-200 bg-white">
         <div className="mx-auto flex min-h-16 max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
           <Link href="/search" className="flex items-center gap-2.5">
             <Image
               src="/onisource-symbol.svg"
               alt="Símbolo OniSource"
-              width={32}
-              height={32}
+              width={28}
+              height={28}
               priority
             />
-            <span className="text-lg font-semibold text-brand-blue-800">
+            <span className="text-lg font-semibold text-[#16327F]">
               OniSource
             </span>
           </Link>
@@ -379,14 +388,15 @@ export default function AdminPage() {
             <span className="hidden text-sm text-gray-500 sm:inline">
               {session.email}
             </span>
-            <span className="rounded-full bg-brand-gold-200 px-2.5 py-1 text-xs font-bold uppercase tracking-wide text-amber-900">
+            <span className="rounded-md bg-[#16327F]/10 px-2 py-0.5 text-xs font-medium text-[#16327F]">
               Admin
             </span>
             <button
               type="button"
               onClick={handleSignOut}
-              className="rounded-lg border border-brand-blue-300 px-3 py-2 text-sm font-semibold text-brand-blue-800 transition hover:border-brand-blue-700 hover:bg-brand-blue-50 focus:outline-none focus:ring-4 focus:ring-brand-blue-300/40"
+              className="inline-flex items-center gap-1.5 px-1 py-2 text-sm text-gray-500 transition hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-gray-300"
             >
+              <LogOut className="h-4 w-4" aria-hidden="true" />
               Sair
             </button>
           </div>
@@ -395,17 +405,19 @@ export default function AdminPage() {
 
       <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
         <div className="mb-7">
-          <p className="text-sm font-semibold uppercase tracking-widest text-brand-blue-500">
+          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">
             Administração
           </p>
-          <h1 className="mt-1 text-3xl font-semibold text-brand-blue-900">
+          <h1 className="mt-1 text-2xl font-semibold text-gray-800">
             Painel OniSource
           </h1>
         </div>
 
         <div className="overflow-x-auto border-b border-gray-200">
           <nav className="flex min-w-max gap-1" aria-label="Seções administrativas">
-            {TABS.map((tab) => (
+            {TABS.map((tab) => {
+              const TabIcon = tab.icon;
+              return (
               <button
                 key={tab.id}
                 type="button"
@@ -413,16 +425,17 @@ export default function AdminPage() {
                   setActiveTab(tab.id);
                   setErrorMessage("");
                 }}
-                className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold transition ${
+                className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition ${
                   activeTab === tab.id
-                    ? "border-brand-blue-800 text-brand-blue-800"
-                    : "border-transparent text-gray-500 hover:border-brand-blue-300 hover:text-brand-blue-700"
+                    ? "border-[#16327F] text-[#16327F]"
+                    : "border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700"
                 }`}
               >
-                <span aria-hidden="true">{tab.icon}</span>
+                <TabIcon className="h-4 w-4" aria-hidden="true" />
                 {tab.label}
               </button>
-            ))}
+              );
+            })}
           </nav>
         </div>
 
@@ -437,7 +450,7 @@ export default function AdminPage() {
 
         {activeTab === "searches" ? (
           <section className="mt-6">
-            <div className="mb-5 grid gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:grid-cols-3">
+            <div className="mb-5 grid gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm sm:grid-cols-3">
               <label className="text-sm font-medium text-gray-700">
                 Usuário
                 <select
@@ -446,7 +459,7 @@ export default function AdminPage() {
                     setFilterUser(event.target.value);
                     setSearchPage(1);
                   }}
-                  className="mt-2 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 font-normal outline-none focus:border-brand-blue-700 focus:ring-4 focus:ring-brand-blue-300/30"
+                  className="mt-2 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 font-normal outline-none focus:border-[#16327F] focus:ring-1 focus:ring-[#16327F]"
                 >
                   <option value="">Todos os usuários</option>
                   {searchUsers.map((email) => (
@@ -466,7 +479,7 @@ export default function AdminPage() {
                     setDateFrom(event.target.value);
                     setSearchPage(1);
                   }}
-                  className="mt-2 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 font-normal outline-none focus:border-brand-blue-700 focus:ring-4 focus:ring-brand-blue-300/30"
+                  className="mt-2 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 font-normal outline-none focus:border-[#16327F] focus:ring-1 focus:ring-[#16327F]"
                 />
               </label>
               <label className="text-sm font-medium text-gray-700">
@@ -479,22 +492,22 @@ export default function AdminPage() {
                     setDateTo(event.target.value);
                     setSearchPage(1);
                   }}
-                  className="mt-2 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 font-normal outline-none focus:border-brand-blue-700 focus:ring-4 focus:ring-brand-blue-300/30"
+                  className="mt-2 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 font-normal outline-none focus:border-[#16327F] focus:ring-1 focus:ring-[#16327F]"
                 />
               </label>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200 text-left text-sm">
-                  <thead className="bg-brand-blue-50 text-xs uppercase tracking-wide text-brand-blue-900">
+                  <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
                     <tr>
-                      <th className="px-4 py-3 font-semibold">Data/Hora</th>
-                      <th className="px-4 py-3 font-semibold">Usuário</th>
-                      <th className="px-4 py-3 font-semibold">Busca</th>
-                      <th className="px-4 py-3 font-semibold">Filtros aplicados</th>
-                      <th className="px-4 py-3 text-right font-semibold">Resultados</th>
-                      <th className="px-4 py-3 text-right font-semibold">Tokens</th>
+                      <th className="px-4 py-3 font-medium">Data/Hora</th>
+                      <th className="px-4 py-3 font-medium">Usuário</th>
+                      <th className="px-4 py-3 font-medium">Busca</th>
+                      <th className="px-4 py-3 font-medium">Filtros aplicados</th>
+                      <th className="px-4 py-3 text-right font-medium">Resultados</th>
+                      <th className="px-4 py-3 text-right font-medium">Tokens</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -532,22 +545,26 @@ export default function AdminPage() {
                 <span>
                   Página {searchPage} de {totalPages} · {searchTotalCount} registros
                 </span>
-                <div className="flex gap-2">
+                <div className="flex gap-1">
                   <button
                     type="button"
                     disabled={searchPage <= 1 || isLoading}
                     onClick={() => setSearchPage((page) => Math.max(1, page - 1))}
-                    className="rounded-lg border border-gray-300 px-3 py-1.5 font-medium hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-md p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Página anterior"
+                    title="Página anterior"
                   >
-                    Anterior
+                    <ChevronLeft className="h-4 w-4" aria-hidden="true" />
                   </button>
                   <button
                     type="button"
                     disabled={searchPage >= totalPages || isLoading}
                     onClick={() => setSearchPage((page) => page + 1)}
-                    className="rounded-lg border border-gray-300 px-3 py-1.5 font-medium hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-md p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Próxima página"
+                    title="Próxima página"
                   >
-                    Próxima
+                    <ChevronRight className="h-4 w-4" aria-hidden="true" />
                   </button>
                 </div>
               </div>
@@ -565,25 +582,27 @@ export default function AdminPage() {
               ].map((card) => (
                 <article
                   key={card.label}
-                  className="rounded-xl border border-brand-blue-300 bg-white p-5 shadow-sm"
+                  className="rounded-lg border border-gray-200 bg-white p-4"
                 >
-                  <p className="text-sm font-medium text-gray-500">{card.label}</p>
-                  <p className="mt-2 text-3xl font-semibold text-brand-blue-900">
+                  <p className="text-xs font-medium uppercase tracking-wider text-gray-500">
+                    {card.label}
+                  </p>
+                  <p className="mt-2 text-2xl font-semibold text-gray-900">
                     {formatNumber(card.value)}
                   </p>
                 </article>
               ))}
             </div>
 
-            <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="mt-6 overflow-hidden rounded-lg border border-gray-200 bg-white">
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200 text-left text-sm">
-                  <thead className="bg-brand-blue-50 text-xs uppercase tracking-wide text-brand-blue-900">
+                  <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
                     <tr>
-                      <th className="px-4 py-3 font-semibold">Email</th>
-                      <th className="px-4 py-3 text-right font-semibold">Total de Buscas</th>
-                      <th className="px-4 py-3 text-right font-semibold">Total de Tokens</th>
-                      <th className="px-4 py-3 font-semibold">Última Busca</th>
+                      <th className="px-4 py-3 font-medium">Email</th>
+                      <th className="px-4 py-3 text-right font-medium">Total de Buscas</th>
+                      <th className="px-4 py-3 text-right font-medium">Total de Tokens</th>
+                      <th className="px-4 py-3 font-medium">Última Busca</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -627,7 +646,7 @@ export default function AdminPage() {
                   onChange={(event) =>
                     setReportStatus(event.target.value as ReportStatusFilter)
                   }
-                  className="mt-2 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 font-normal outline-none focus:border-brand-blue-700 focus:ring-4 focus:ring-brand-blue-300/30"
+                  className="mt-2 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 font-normal outline-none focus:border-[#16327F] focus:ring-1 focus:ring-[#16327F]"
                 >
                   <option value="">Todos</option>
                   <option value="open">Abertos</option>
@@ -636,16 +655,16 @@ export default function AdminPage() {
               </label>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200 text-left text-sm">
-                  <thead className="bg-brand-blue-50 text-xs uppercase tracking-wide text-brand-blue-900">
+                  <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
                     <tr>
-                      <th className="px-4 py-3 font-semibold">Data/Hora</th>
-                      <th className="px-4 py-3 font-semibold">Usuário</th>
-                      <th className="px-4 py-3 font-semibold">Mensagem</th>
-                      <th className="px-4 py-3 font-semibold">Status</th>
-                      <th className="px-4 py-3 text-right font-semibold">Ação</th>
+                      <th className="px-4 py-3 font-medium">Data/Hora</th>
+                      <th className="px-4 py-3 font-medium">Usuário</th>
+                      <th className="px-4 py-3 font-medium">Mensagem</th>
+                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 text-right font-medium">Ação</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -664,10 +683,10 @@ export default function AdminPage() {
                           </td>
                           <td className="px-4 py-3">
                             <span
-                              className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              className={`rounded-md border px-2 py-0.5 text-xs font-medium ${
                                 isResolved
-                                  ? "bg-emerald-100 text-emerald-800"
-                                  : "bg-red-100 text-red-700"
+                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                  : "border-red-200 bg-red-50 text-red-700"
                               }`}
                             >
                               {isResolved ? "Resolvido" : "Aberto"}
@@ -678,7 +697,7 @@ export default function AdminPage() {
                               type="button"
                               disabled={isResolved || resolvingReportId === report.id}
                               onClick={() => handleResolveReport(report.id)}
-                              className="rounded-lg border border-brand-blue-300 px-3 py-1.5 text-xs font-semibold text-brand-blue-800 transition hover:bg-brand-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+                              className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50 hover:text-[#16327F] disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {resolvingReportId === report.id
                                 ? "Salvando..."
@@ -703,8 +722,8 @@ export default function AdminPage() {
         ) : null}
 
         {isLoading ? (
-          <div className="flex items-center justify-center gap-3 py-8 text-sm font-medium text-brand-blue-800">
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-brand-blue-300 border-t-brand-blue-800" />
+          <div className="flex items-center justify-center gap-3 py-8 text-sm text-gray-500">
+            <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-[#16327F]" />
             Carregando dados...
           </div>
         ) : null}
