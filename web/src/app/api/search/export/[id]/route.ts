@@ -1,5 +1,4 @@
-import * as XLSX from "xlsx";
-
+import { generateXmlSpreadsheet } from "@/lib/xml-spreadsheet";
 import { createServerSupabaseClient } from "../../../../../lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -115,30 +114,48 @@ export async function GET(
       const status = text(annotation?.status);
 
       return {
-        Empresa: text(supplier.company_name),
-        País: text(supplier.country),
-        Website: text(supplier.website),
-        Papel: ROLE_LABELS[role] ?? role,
-        Confiança: CONFIDENCE_LABELS[confidence] ?? confidence,
-        "Nota do Sistema": text(supplier.notes),
-        "Status de Contato": STATUS_LABELS[status] ?? status,
-        "Anotação do Usuário": text(annotation?.note),
+        empresa: text(supplier.company_name),
+        pais: text(supplier.country),
+        website: text(supplier.website),
+        papel: ROLE_LABELS[role] ?? role,
+        confianca: CONFIDENCE_LABELS[confidence] ?? confidence,
+        nota: text(supplier.notes),
+        status_contato: STATUS_LABELS[status] ?? status,
+        anotacao: text(annotation?.note),
       };
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Fornecedores");
-    const file = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const query = String(searchResult.query ?? "resultado");
+    const resolvedQuery = text(searchResult.resolved_query);
+    const mpCode = searchResult.mp_code;
+    const resolvedSubtitle =
+      resolvedQuery && resolvedQuery !== query && mpCode !== null && mpCode !== undefined
+        ? ` (MP ${mpCode} → ${resolvedQuery})`
+        : "";
+    const file = generateXmlSpreadsheet({
+      title: "OniSource — Sourcing",
+      subtitle: `Produto: ${query}${resolvedSubtitle}`,
+      sheetName: "Fornecedores",
+      columns: [
+        { header: "Empresa", key: "empresa", width: 35 },
+        { header: "País", key: "pais", width: 18 },
+        { header: "Website", key: "website", width: 40 },
+        { header: "Papel", key: "papel", width: 16 },
+        { header: "Confiança", key: "confianca", width: 14 },
+        { header: "Nota", key: "nota", width: 55 },
+        { header: "Status", key: "status_contato", width: 20 },
+        { header: "Anotação", key: "anotacao", width: 40 },
+      ],
+      rows,
+    });
     const date = new Date(searchResult.created_at ?? Date.now())
       .toISOString()
       .slice(0, 10);
-    const filename = `OniSource_${filenamePart(String(searchResult.query ?? "resultado"))}_${date}.xlsx`;
+    const filename = `OniSource_Sourcing_${filenamePart(query)}_${date}.xml`;
 
     return new Response(file, {
       headers: {
-        "Content-Type":
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Type": "application/vnd.ms-excel",
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });

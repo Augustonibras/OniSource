@@ -1091,7 +1091,7 @@ export default function SearchPage() {
                     className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 text-xs text-gray-500 transition hover:text-gray-700"
                   >
                     <Download className="h-4 w-4" aria-hidden="true" />
-                    Exportar .xlsx
+                    Exportar planilha
                   </button>
                 ) : null}
               </div>

@@ -1,5 +1,4 @@
-import * as XLSX from "xlsx";
-
+import { generateXmlSpreadsheet } from "@/lib/xml-spreadsheet";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -23,7 +22,7 @@ interface ProspectAnnotation {
 }
 
 const ROLE_LABELS: Record<string, string> = {
-  "Mill/Plant": "Usina",
+  "Mill/Plant": "Usina/Planta",
   Distributor: "Distribuidor",
   Industry: "Indústria",
 };
@@ -102,30 +101,43 @@ export async function GET(
       const role = text(prospect.role);
       const status = text(annotation?.status);
       return {
-        Empresa: text(prospect.company),
-        País: text(prospect.country),
-        Website: text(prospect.website),
-        Tipo: ROLE_LABELS[role] ?? role,
-        Confiança: text(prospect.confidence),
-        Nota: text(prospect.note),
-        "Status de Contato": STATUS_LABELS[status] ?? status,
-        Anotação: text(annotation?.note),
+        empresa: text(prospect.company),
+        pais: text(prospect.country),
+        website: text(prospect.website),
+        tipo: ROLE_LABELS[role] ?? role,
+        confianca: text(prospect.confidence),
+        nota: text(prospect.note),
+        status_contato: STATUS_LABELS[status] ?? status,
+        anotacao: text(annotation?.note),
       };
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Potenciais clientes");
-    const file = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const product = String(salesSearch.product_name ?? "produto");
+    const location = String(salesSearch.location_value ?? "local");
+    const file = generateXmlSpreadsheet({
+      title: "OniSource — Prospecção de Clientes",
+      subtitle: `Produto: ${product} | Localização: ${location}`,
+      sheetName: "Prospectos",
+      columns: [
+        { header: "Empresa", key: "empresa", width: 35 },
+        { header: "País", key: "pais", width: 18 },
+        { header: "Website", key: "website", width: 40 },
+        { header: "Tipo", key: "tipo", width: 20 },
+        { header: "Confiança", key: "confianca", width: 14 },
+        { header: "Nota", key: "nota", width: 55 },
+        { header: "Status", key: "status_contato", width: 20 },
+        { header: "Anotação", key: "anotacao", width: 40 },
+      ],
+      rows,
+    });
     const date = new Date(salesSearch.created_at ?? Date.now())
       .toISOString()
       .slice(0, 10);
-    const filename = `OniSource_Vendas_${filenamePart(String(salesSearch.product_name ?? "produto"))}_${filenamePart(String(salesSearch.location_value ?? "local"))}_${date}.xlsx`;
+    const filename = `OniSource_Vendas_${filenamePart(product)}_${filenamePart(location)}_${date}.xml`;
 
     return new Response(file, {
       headers: {
-        "Content-Type":
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Type": "application/vnd.ms-excel",
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });
