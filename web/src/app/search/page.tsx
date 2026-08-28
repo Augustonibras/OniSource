@@ -1323,6 +1323,15 @@ export default function SearchPage() {
                         onClick={() => handleExternalPrompt("https://claude.ai/new")}
                         className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50"
                       >
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 256 256"
+                          fill="currentColor"
+                          className="w-4 h-4 shrink-0"
+                        >
+                          <path d="M169.22 79.8l-53.83 133.5h-33.6L135.6 79.8h33.62zM86.78 79.8L33.17 213.3H0l53.6-133.5h33.18zm124.44 0l53.61 133.5h-33.17l-53.83-133.5h33.39z" />
+                        </svg>
                         Pesquisar no Claude
                       </button>
                       <button
@@ -1330,6 +1339,15 @@ export default function SearchPage() {
                         onClick={() => handleExternalPrompt("https://chatgpt.com/")}
                         className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50"
                       >
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="currentColor"
+                          className="w-4 h-4 shrink-0"
+                        >
+                          <path d="M22.28 9.37a5.93 5.93 0 00-.51-4.87 6.01 6.01 0 00-6.47-2.87A5.93 5.93 0 0010.84 0a6.01 6.01 0 00-5.73 4.13 5.93 5.93 0 00-3.97 2.88 6.01 6.01 0 00.74 7.04 5.93 5.93 0 00.51 4.87 6.01 6.01 0 006.47 2.87A5.93 5.93 0 0013.32 24a6.01 6.01 0 005.73-4.13 5.93 5.93 0 003.97-2.88 6.01 6.01 0 00-.74-7.62zM13.32 22.34a4.47 4.47 0 01-2.88-1.05l.14-.08 4.79-2.76a.78.78 0 00.39-.68v-6.74l2.02 1.17a.07.07 0 01.04.06v5.58a4.49 4.49 0 01-4.5 4.5zM3.97 18.21a4.47 4.47 0 01-.54-3.01l.14.09 4.79 2.76a.78.78 0 00.78 0l5.85-3.38v2.34a.07.07 0 01-.03.06l-4.84 2.8a4.49 4.49 0 01-6.15-1.66zM2.68 7.88A4.47 4.47 0 014.9 5.92v5.69a.78.78 0 00.39.68l5.85 3.38-2.02 1.17a.07.07 0 01-.07 0l-4.84-2.8a4.49 4.49 0 01-1.53-6.16zm16.4 3.81l-5.85-3.38 2.02-1.17a.07.07 0 01.07 0l4.84 2.8a4.49 4.49 0 01-.69 8.1v-5.67a.78.78 0 00-.39-.68zm2.01-3.03l-.14-.09-4.79-2.76a.78.78 0 00-.78 0L9.53 9.19V6.85a.07.07 0 01.03-.06l4.84-2.8a4.49 4.49 0 016.69 4.67zM8.43 13.46l-2.02-1.17a.07.07 0 01-.04-.06V6.65a4.49 4.49 0 017.38-3.45l-.14.08-4.79 2.76a.78.78 0 00-.39.68v6.74zm1.1-2.37l2.6-1.5 2.6 1.5v3l-2.6 1.5-2.6-1.5v-3z" />
+                        </svg>
                         Pesquisar no ChatGPT
                       </button>
                     </div>
