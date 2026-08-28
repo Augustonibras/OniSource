@@ -7,10 +7,15 @@ import {
   AlertTriangle,
   Check,
   ClipboardCopy,
+  Clock,
   Copy,
+  Download,
+  ExternalLink,
   Factory,
   Globe,
   LogOut,
+  Mail,
+  MessageSquare,
   RefreshCw,
   Search,
   SearchX,
@@ -25,6 +30,7 @@ import {
   KeyboardEvent,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -61,7 +67,51 @@ interface SearchApiResponse {
   tokens_used?: number;
   resolvedQuery?: string;
   mpCode?: number | null;
+  searchResultId?: string;
+  cached?: boolean;
+  createdAt?: string;
   error?: string;
+}
+
+interface SavedSearchResult {
+  id: string;
+  query: string;
+  resolved_query: string | null;
+  mp_code: number | null;
+  filters: SearchFilters;
+  results: SupplierResult[];
+  created_at: string;
+}
+
+type AnnotationStatus =
+  | "new"
+  | "contacted"
+  | "waiting"
+  | "quoted"
+  | "sample_requested"
+  | "rejected";
+
+interface SupplierAnnotation {
+  id: string;
+  search_result_id: string;
+  supplier_name: string;
+  supplier_url: string | null;
+  product_query: string;
+  status: AnnotationStatus;
+  note: string;
+  user_email: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface AnnotationDraft {
+  status: AnnotationStatus;
+  note: string;
+}
+
+interface RfqDraft {
+  supplierName: string;
+  content: string;
 }
 
 interface CountryTagsProps {
@@ -118,6 +168,43 @@ const CONFIDENCE_STYLES: Record<
   LOW: {
     label: "Baixa",
     className: "border border-gray-200 bg-gray-100 text-gray-500",
+  },
+};
+
+const ANNOTATION_STATUS_OPTIONS: Array<{
+  value: AnnotationStatus;
+  label: string;
+}> = [
+  { value: "new", label: "Novo" },
+  { value: "contacted", label: "Contatado" },
+  { value: "waiting", label: "Aguardando resposta" },
+  { value: "quoted", label: "Cotação recebida" },
+  { value: "sample_requested", label: "Amostra solicitada" },
+  { value: "rejected", label: "Descartado" },
+];
+
+const ANNOTATION_STATUS_STYLES: Partial<
+  Record<AnnotationStatus, { label: string; className: string }>
+> = {
+  contacted: {
+    label: "Contatado",
+    className: "border border-amber-200 bg-amber-50 text-amber-700",
+  },
+  waiting: {
+    label: "Aguardando resposta",
+    className: "border border-amber-200 bg-amber-50 text-amber-700",
+  },
+  quoted: {
+    label: "Cotação recebida",
+    className: "border border-blue-200 bg-blue-50 text-blue-700",
+  },
+  sample_requested: {
+    label: "Amostra solicitada",
+    className: "border border-blue-200 bg-blue-50 text-blue-700",
+  },
+  rejected: {
+    label: "Descartado",
+    className: "border border-red-200 bg-red-50 text-red-700",
   },
 };
 
@@ -214,6 +301,72 @@ function mergeCompanyNames(current: string[], additions: string[]) {
   return merged;
 }
 
+function supplierKey(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function formatSavedDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function buildRfqTemplate(companyName: string, productQuery: string) {
+  return `Subject: RFQ — ${productQuery} — Onibras Produtos Químicos
+
+Dear ${companyName},
+
+Onibras Produtos Químicos (Ribeirão Preto, Brazil) is sourcing ${productQuery} for industrial application. We kindly request a quotation with the following information:
+
+1. Product specification (TDS and CoA)
+2. Price per MT — FOB and CFR Santos (Brazil)
+3. Minimum Order Quantity (MOQ)
+4. Lead time from order confirmation
+5. Packaging options
+6. Country of origin / manufacturing plant location
+7. Sample availability (quantity and shipping cost)
+
+We look forward to your reply.
+
+Best regards,
+Onibras Produtos Químicos
+International Sourcing`;
+}
+
+function parseRfqContent(content: string) {
+  const [firstLine = "", ...remainingLines] = content.split(/\r?\n/);
+  return {
+    subject: firstLine.replace(/^Subject:\s*/i, "").trim(),
+    body: remainingLines.join("\n").replace(/^\s*\n/, ""),
+  };
+}
+
+function normalizeSavedFilters(value: unknown): SearchFilters {
+  if (!value || typeof value !== "object") {
+    return { brazilOnly: false, onlyCountries: [], excludeCountries: [] };
+  }
+
+  const filters = value as Record<string, unknown>;
+  return {
+    brazilOnly: filters.brazilOnly === true,
+    onlyCountries: Array.isArray(filters.onlyCountries)
+      ? filters.onlyCountries.filter(
+          (country): country is string => typeof country === "string",
+        )
+      : [],
+    excludeCountries: Array.isArray(filters.excludeCountries)
+      ? filters.excludeCountries.filter(
+          (country): country is string => typeof country === "string",
+        )
+      : [],
+  };
+}
+
 function CountryTags({
   id,
   label,
@@ -297,6 +450,7 @@ function CountryTags({
 
 export default function SearchPage() {
   const router = useRouter();
+  const loadedResultIdRef = useRef<string | null>(null);
   const sessionValue = useSyncExternalStore(
     subscribeToSession,
     getSessionSnapshot,
@@ -318,6 +472,21 @@ export default function SearchPage() {
     null,
   );
   const [excludedCompanies, setExcludedCompanies] = useState<string[]>([]);
+  const [searchResultId, setSearchResultId] = useState<string | null>(null);
+  const [isCachedResult, setIsCachedResult] = useState(false);
+  const [savedResultCreatedAt, setSavedResultCreatedAt] = useState("");
+  const [annotations, setAnnotations] = useState<
+    Record<string, SupplierAnnotation>
+  >({});
+  const [annotationDrafts, setAnnotationDrafts] = useState<
+    Record<string, AnnotationDraft>
+  >({});
+  const [expandedAnnotation, setExpandedAnnotation] = useState<string | null>(
+    null,
+  );
+  const [savingAnnotation, setSavingAnnotation] = useState<string | null>(null);
+  const [rfqDraft, setRfqDraft] = useState<RfqDraft | null>(null);
+  const [rfqCopied, setRfqCopied] = useState(false);
   const [copied, setCopied] = useState(false);
   const [promptFallbackVisible, setPromptFallbackVisible] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
@@ -326,11 +495,91 @@ export default function SearchPage() {
   const [isReportSubmitting, setIsReportSubmitting] = useState(false);
   const [reportSuccess, setReportSuccess] = useState(false);
 
+  async function loadAnnotations(resultId: string) {
+    try {
+      const response = await fetch(
+        `/api/annotations?search_result_id=${encodeURIComponent(resultId)}`,
+      );
+      const data = (await response.json()) as {
+        annotations?: SupplierAnnotation[];
+      };
+      if (!response.ok) {
+        setAnnotations({});
+        return;
+      }
+
+      const nextAnnotations: Record<string, SupplierAnnotation> = {};
+      for (const annotation of data.annotations ?? []) {
+        nextAnnotations[supplierKey(annotation.supplier_name)] = annotation;
+      }
+      setAnnotations(nextAnnotations);
+    } catch {
+      setAnnotations({});
+    }
+  }
+
   useEffect(() => {
     if (!session) {
       router.replace("/");
     }
   }, [router, session]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    const resultId = new URLSearchParams(window.location.search).get("resultId");
+    if (!resultId || loadedResultIdRef.current === resultId) {
+      return;
+    }
+    loadedResultIdRef.current = resultId;
+
+    async function loadSavedResult() {
+      setIsLoading(true);
+      setErrorMessage("");
+      try {
+        const response = await fetch(
+          `/api/search/results/${encodeURIComponent(resultId!)}`,
+        );
+        const data = (await response.json()) as {
+          result?: SavedSearchResult;
+          error?: string;
+        };
+        if (!response.ok || !data.result || !Array.isArray(data.result.results)) {
+          setErrorMessage(
+            data.error ?? "Não foi possível carregar o resultado salvo.",
+          );
+          return;
+        }
+
+        const savedResult = data.result;
+        const savedFilters = normalizeSavedFilters(savedResult.filters);
+        setQuery(savedResult.query);
+        setBrazilOnly(savedFilters.brazilOnly);
+        setOnlyCountries(savedFilters.onlyCountries);
+        setExcludeCountries(savedFilters.excludeCountries);
+        setSubmittedQuery(savedResult.query);
+        setResolvedQuery(savedResult.resolved_query ?? savedResult.query);
+        setSubmittedMpCode(savedResult.mp_code);
+        setSubmittedFilters(savedFilters);
+        setResults(savedResult.results);
+        setSearchResultId(savedResult.id);
+        setIsCachedResult(true);
+        setSavedResultCreatedAt(savedResult.created_at);
+        setExcludedCompanies([]);
+        setExpandedAnnotation(null);
+        setAnnotationDrafts({});
+        await loadAnnotations(savedResult.id);
+      } catch {
+        setErrorMessage("Não foi possível carregar o resultado salvo.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadSavedResult();
+  }, [session]);
 
   function handleSignOut() {
     localStorage.removeItem(SESSION_KEY);
@@ -361,6 +610,7 @@ export default function SearchPage() {
     searchQuery: string,
     filters: SearchFilters,
     exclusions: string[],
+    forceRefresh = false,
   ) {
     if (!session?.email) {
       return;
@@ -369,6 +619,12 @@ export default function SearchPage() {
     setIsLoading(true);
     setErrorMessage("");
     setResults(null);
+    setSearchResultId(null);
+    setIsCachedResult(false);
+    setSavedResultCreatedAt("");
+    setAnnotations({});
+    setAnnotationDrafts({});
+    setExpandedAnnotation(null);
 
     try {
       const response = await fetch("/api/search", {
@@ -379,6 +635,7 @@ export default function SearchPage() {
           filters,
           userEmail: session.email,
           exclude: exclusions,
+          forceRefresh,
         }),
       });
       const data = (await response.json()) as SearchApiResponse;
@@ -393,6 +650,20 @@ export default function SearchPage() {
       setSubmittedMpCode(data.mpCode ?? null);
       setSubmittedFilters(filters);
       setResults(data.results);
+      const nextSearchResultId = data.searchResultId ?? null;
+      setSearchResultId(nextSearchResultId);
+      setIsCachedResult(data.cached === true);
+      setSavedResultCreatedAt(data.createdAt ?? "");
+      if (nextSearchResultId) {
+        window.history.replaceState(
+          null,
+          "",
+          `/search?resultId=${encodeURIComponent(nextSearchResultId)}`,
+        );
+        await loadAnnotations(nextSearchResultId);
+      } else {
+        window.history.replaceState(null, "", "/search");
+      }
     } catch {
       setErrorMessage("Não foi possível conectar ao serviço de pesquisa.");
     } finally {
@@ -434,6 +705,14 @@ export default function SearchPage() {
     );
   }
 
+  async function handleForceRefresh() {
+    if (!submittedFilters || !submittedQuery) {
+      return;
+    }
+    setExcludedCompanies([]);
+    await performSearch(submittedQuery, submittedFilters, [], true);
+  }
+
   async function handleCopyPrompt() {
     if (!submittedFilters) {
       return;
@@ -464,6 +743,104 @@ export default function SearchPage() {
     } catch {
       setErrorMessage("Não foi possível copiar o prompt.");
     }
+  }
+
+  function handleAnnotationToggle(result: SupplierResult) {
+    const key = supplierKey(result.company_name);
+    setExpandedAnnotation((current) => (current === key ? null : key));
+    setAnnotationDrafts((current) => {
+      if (current[key]) {
+        return current;
+      }
+      const annotation = annotations[key];
+      return {
+        ...current,
+        [key]: {
+          status: annotation?.status ?? "new",
+          note: annotation?.note ?? "",
+        },
+      };
+    });
+  }
+
+  async function handleSaveAnnotation(result: SupplierResult) {
+    if (!searchResultId || !session) {
+      setErrorMessage("Este resultado ainda não foi salvo.");
+      return;
+    }
+
+    const key = supplierKey(result.company_name);
+    const draft = annotationDrafts[key] ?? { status: "new", note: "" };
+    setSavingAnnotation(key);
+    setErrorMessage("");
+
+    try {
+      const response = await fetch("/api/annotations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          search_result_id: searchResultId,
+          supplier_name: result.company_name,
+          supplier_url: result.website,
+          product_query: resolvedQuery || submittedQuery,
+          status: draft.status,
+          note: draft.note,
+          user_email: session.email,
+        }),
+      });
+      const data = (await response.json()) as {
+        annotation?: SupplierAnnotation;
+        error?: string;
+      };
+      if (!response.ok || !data.annotation) {
+        setErrorMessage(data.error ?? "Não foi possível salvar a anotação.");
+        return;
+      }
+
+      setAnnotations((current) => ({
+        ...current,
+        [key]: data.annotation!,
+      }));
+    } catch {
+      setErrorMessage("Não foi possível salvar a anotação.");
+    } finally {
+      setSavingAnnotation(null);
+    }
+  }
+
+  function handleOpenRfq(result: SupplierResult) {
+    const productQuery =
+      submittedMpCode !== null ? resolvedQuery : submittedQuery;
+    setRfqCopied(false);
+    setRfqDraft({
+      supplierName: result.company_name,
+      content: buildRfqTemplate(result.company_name, productQuery),
+    });
+  }
+
+  async function handleCopyRfq() {
+    if (!rfqDraft) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(rfqDraft.content);
+      setRfqCopied(true);
+      window.setTimeout(() => setRfqCopied(false), 2000);
+    } catch {
+      setErrorMessage("Não foi possível copiar a RFQ.");
+    }
+  }
+
+  function handleOpenGmail() {
+    if (!rfqDraft) {
+      return;
+    }
+    const { subject, body } = parseRfqContent(rfqDraft.content);
+    const gmailUrl = new URL("https://mail.google.com/mail/");
+    gmailUrl.searchParams.set("view", "cm");
+    gmailUrl.searchParams.set("su", subject);
+    gmailUrl.searchParams.set("body", body);
+    window.open(gmailUrl.toString(), "_blank");
   }
 
   async function handleReportSubmit(event: FormEvent<HTMLFormElement>) {
@@ -678,9 +1055,42 @@ export default function SearchPage() {
               </div>
             ) : null}
             <div className="border-b border-gray-200 pb-4">
-              <p className="text-sm text-gray-500">
-                {results.length} fornecedores encontrados
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-gray-500">
+                  {results.length} fornecedores encontrados
+                </p>
+                {searchResultId ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      window.open(
+                        `/api/search/export/${encodeURIComponent(searchResultId)}`,
+                        "_blank",
+                      )
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 text-xs text-gray-500 transition hover:text-gray-700"
+                  >
+                    <Download className="h-4 w-4" aria-hidden="true" />
+                    Exportar .xlsx
+                  </button>
+                ) : null}
+              </div>
+              {isCachedResult && savedResultCreatedAt ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                    Resultados salvos de {formatSavedDate(savedResultCreatedAt)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleForceRefresh}
+                    className="inline-flex items-center gap-1 text-gray-400 transition hover:text-gray-600"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                    Forçar nova busca
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             {results.length === 0 ? (
@@ -722,6 +1132,16 @@ export default function SearchPage() {
                       {sectionResults.map((result, index) => {
                         const link = websiteUrl(result.website);
                         const confidence = CONFIDENCE_STYLES[result.confidence];
+                        const key = supplierKey(result.company_name);
+                        const annotation = annotations[key];
+                        const statusStyle = annotation
+                          ? ANNOTATION_STATUS_STYLES[annotation.status]
+                          : undefined;
+                        const draft = annotationDrafts[key] ?? {
+                          status: annotation?.status ?? "new",
+                          note: annotation?.note ?? "",
+                        };
+                        const isAnnotationExpanded = expandedAnnotation === key;
 
                         return (
                           <article
@@ -748,15 +1168,103 @@ export default function SearchPage() {
                                   {result.country}
                                 </p>
                               </div>
-                              <span
-                                className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ${confidence.className}`}
-                              >
-                                {confidence.label}
-                              </span>
+                              <div className="flex flex-wrap justify-end gap-2">
+                                {statusStyle ? (
+                                  <span
+                                    className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ${statusStyle.className}`}
+                                  >
+                                    {statusStyle.label}
+                                  </span>
+                                ) : null}
+                                <span
+                                  className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ${confidence.className}`}
+                                >
+                                  {confidence.label}
+                                </span>
+                              </div>
                             </div>
                             <p className="mt-1 text-sm leading-6 text-gray-500">
                               {result.notes}
                             </p>
+                            <div className="mt-3 flex justify-end gap-3">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenRfq(result)}
+                                className="inline-flex items-center gap-1 text-xs text-gray-400 transition hover:text-gray-600"
+                              >
+                                <Mail className="h-3.5 w-3.5" aria-hidden="true" />
+                                RFQ
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleAnnotationToggle(result)}
+                                aria-expanded={isAnnotationExpanded}
+                                className="inline-flex items-center gap-1 text-xs text-gray-400 transition hover:text-gray-600"
+                              >
+                                <MessageSquare
+                                  className="h-3.5 w-3.5"
+                                  aria-hidden="true"
+                                />
+                                Anotação
+                              </button>
+                            </div>
+                            {isAnnotationExpanded ? (
+                              <div className="mt-3 border-t border-gray-100 pt-3">
+                                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto] sm:items-end">
+                                  <label className="text-xs text-gray-500">
+                                    Status
+                                    <select
+                                      value={draft.status}
+                                      onChange={(event) =>
+                                        setAnnotationDrafts((current) => ({
+                                          ...current,
+                                          [key]: {
+                                            ...draft,
+                                            status: event.target
+                                              .value as AnnotationStatus,
+                                          },
+                                        }))
+                                      }
+                                      className="mt-1 h-8 w-full rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-[#16327F]"
+                                    >
+                                      {ANNOTATION_STATUS_OPTIONS.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                          {option.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  <label className="text-xs text-gray-500">
+                                    Observação
+                                    <textarea
+                                      rows={2}
+                                      value={draft.note}
+                                      onChange={(event) =>
+                                        setAnnotationDrafts((current) => ({
+                                          ...current,
+                                          [key]: {
+                                            ...draft,
+                                            note: event.target.value,
+                                          },
+                                        }))
+                                      }
+                                      placeholder="Observação..."
+                                      className="mt-1 w-full resize-none rounded-md border border-gray-200 px-2 py-1.5 text-xs text-gray-700 outline-none placeholder:text-gray-400 focus:border-[#16327F]"
+                                    />
+                                  </label>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSaveAnnotation(result)}
+                                    disabled={savingAnnotation === key}
+                                    className="h-8 rounded-md bg-[#16327F] px-3 text-xs font-medium text-white transition hover:bg-[#2B4FAE] disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {savingAnnotation === key
+                                      ? "Salvando..."
+                                      : "Salvar"}
+                                  </button>
+                                </div>
+                              </div>
+                            ) : null}
                           </article>
                         );
                       })}
@@ -854,6 +1362,75 @@ export default function SearchPage() {
           </button>
         </div>
       </footer>
+
+      {rfqDraft ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) {
+              setRfqDraft(null);
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rfq-dialog-title"
+            className="w-full max-w-3xl rounded-xl bg-white p-6 shadow"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <h2
+                id="rfq-dialog-title"
+                className="flex items-center gap-2 text-xl font-semibold text-gray-800"
+              >
+                <Mail className="h-5 w-5 text-gray-500" aria-hidden="true" />
+                RFQ — {rfqDraft.supplierName}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setRfqDraft(null)}
+                aria-label="Fechar RFQ"
+                className="rounded-md p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+            <textarea
+              value={rfqDraft.content}
+              onChange={(event) =>
+                setRfqDraft((current) =>
+                  current ? { ...current, content: event.target.value } : null,
+                )
+              }
+              aria-label="Conteúdo da solicitação de cotação"
+              className="mt-5 h-96 w-full resize-y rounded-lg border border-gray-200 p-4 font-mono text-sm leading-6 text-gray-700 outline-none focus:border-[#16327F] focus:ring-1 focus:ring-[#16327F]"
+            />
+            <div className="mt-4 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleCopyRfq}
+                className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-600 transition hover:bg-gray-50"
+              >
+                {rfqCopied ? (
+                  <Check className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
+                )}
+                {rfqCopied ? "Copiado" : "Copiar"}
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenGmail}
+                className="inline-flex items-center gap-2 rounded-md bg-[#16327F] px-3 py-2 text-sm font-medium text-white transition hover:bg-[#2B4FAE]"
+              >
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                Abrir no Gmail
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {isReportModalOpen ? (
         <div

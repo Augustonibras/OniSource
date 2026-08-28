@@ -1,4 +1,5 @@
 import { resolveMP } from "@/data/mp-codes";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createServerSupabaseClient } from "../../../lib/supabase-server";
 import { extractJsonArray } from "../../../lib/gemini-results";
@@ -25,6 +26,7 @@ interface SearchRequest {
   filters?: SearchFilters;
   userEmail: string;
   exclude?: string[];
+  forceRefresh?: boolean;
 }
 
 interface SupplierResult {
@@ -46,6 +48,16 @@ interface GeminiResponse {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
   };
+}
+
+interface SavedSearchResult {
+  id: string;
+  query: string;
+  resolved_query: string | null;
+  mp_code: number | null;
+  filters: unknown;
+  results: unknown;
+  created_at: string;
 }
 
 function errorResponse(error: string, status: number, details?: string) {
@@ -156,6 +168,23 @@ function sanitizedErrorMessage(error: unknown, apiKey: string) {
   return message.replaceAll(apiKey, "***");
 }
 
+async function recordSearchHistory(
+  supabase: SupabaseClient,
+  userEmail: string,
+  query: string,
+  filters: Required<SearchFilters>,
+  results: SupplierResult[],
+  tokensUsed: number,
+) {
+  return supabase.from("searches").insert({
+    user_email: userEmail,
+    query,
+    filters,
+    results,
+    tokens_used: tokensUsed,
+  });
+}
+
 export async function POST(request: Request) {
   let body: SearchRequest;
 
@@ -195,12 +224,71 @@ export async function POST(request: Request) {
     );
   }
 
+  const { resolved, mpCode } = resolveMP(query);
+  let supabase: SupabaseClient | null = null;
+  try {
+    supabase = createServerSupabaseClient();
+  } catch (error) {
+    console.error("Unable to initialize Supabase for search persistence.", error);
+  }
+
+  if (supabase && excludedCompanies.length === 0 && body.forceRefresh !== true) {
+    const sevenDaysAgo = new Date(
+      Date.now() - 7 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const escapedQuery = query.replace(/([\\%_])/g, "\\$1");
+    const { data: cachedRows, error: cacheError } = await supabase
+      .from("search_results")
+      .select("id,query,resolved_query,mp_code,filters,results,created_at")
+      .ilike("query", escapedQuery)
+      .filter("filters", "eq", JSON.stringify(filters))
+      .gte("created_at", sevenDaysAgo)
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    if (cacheError) {
+      console.error("Unable to check the saved search result cache.", cacheError);
+    } else {
+      const cachedResult = (cachedRows as SavedSearchResult[] | null)?.find(
+        (row) =>
+          row.query.trim().toLocaleLowerCase("pt-BR") ===
+            query.toLocaleLowerCase("pt-BR") &&
+          Array.isArray(row.results) &&
+          row.results.every(isSupplierResult),
+      );
+
+      if (cachedResult) {
+        const cachedResults = cachedResult.results as SupplierResult[];
+        const { error: historyError } = await recordSearchHistory(
+          supabase,
+          userEmail,
+          query,
+          filters,
+          cachedResults,
+          0,
+        );
+        if (historyError) {
+          console.error("Unable to record cached search history.", historyError);
+        }
+
+        return Response.json({
+          results: cachedResults,
+          tokens_used: 0,
+          resolvedQuery: cachedResult.resolved_query ?? resolved,
+          mpCode: cachedResult.mp_code,
+          searchResultId: cachedResult.id,
+          cached: true,
+          createdAt: cachedResult.created_at,
+        });
+      }
+    }
+  }
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return errorResponse("GEMINI_API_KEY was not found in the environment.", 500);
   }
 
-  const { resolved, mpCode } = resolveMP(query);
   const prompt = buildPrompt(resolved, filters, mpCode, excludedCompanies);
   let geminiData: GeminiResponse;
   let results: SupplierResult[];
@@ -258,22 +346,46 @@ export async function POST(request: Request) {
   const tokensUsed =
     (geminiData.usageMetadata?.promptTokenCount ?? 0) +
     (geminiData.usageMetadata?.candidatesTokenCount ?? 0);
+  let savedSearchResult: { id: string; created_at: string } | null = null;
+
+  if (supabase) {
+    const { data, error } = await supabase
+      .from("search_results")
+      .insert({
+        query,
+        resolved_query: resolved,
+        mp_code: mpCode,
+        filters,
+        results,
+        result_count: results.length,
+        user_email: userEmail,
+      })
+      .select("id,created_at")
+      .single();
+
+    if (error) {
+      console.error("Unable to save the search result for reuse.", error);
+    } else {
+      savedSearchResult = data;
+    }
+  }
 
   try {
-    const supabase = createServerSupabaseClient();
-    const { error } = await supabase.from("searches").insert({
-      user_email: userEmail,
+    const historyClient = supabase ?? createServerSupabaseClient();
+    const { error } = await recordSearchHistory(
+      historyClient,
+      userEmail,
       query,
       filters,
       results,
-      tokens_used: tokensUsed,
-    });
+      tokensUsed,
+    );
 
     if (error) {
-      return errorResponse("Unable to save the search result.", 500);
+      console.error("Unable to record search history.", error);
     }
-  } catch {
-    return errorResponse("Unable to save the search result.", 500);
+  } catch (error) {
+    console.error("Unable to record search history.", error);
   }
 
   return Response.json({
@@ -281,5 +393,12 @@ export async function POST(request: Request) {
     tokens_used: tokensUsed,
     resolvedQuery: resolved,
     mpCode,
+    cached: false,
+    ...(savedSearchResult
+      ? {
+          searchResultId: savedSearchResult.id,
+          createdAt: savedSearchResult.created_at,
+        }
+      : {}),
   });
 }

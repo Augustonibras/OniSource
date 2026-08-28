@@ -37,6 +37,7 @@ interface SearchRecord {
   filters: unknown;
   results: unknown;
   tokens_used: number | null;
+  searchResultId: string | null;
 }
 
 interface SearchesResponse {
@@ -518,7 +519,18 @@ export default function AdminPage() {
                         </td>
                         <td className="px-4 py-3 text-gray-600">{search.user_email}</td>
                         <td className="max-w-72 px-4 py-3 font-medium text-gray-900">
-                          {search.query}
+                          {search.searchResultId ? (
+                            <Link
+                              href={`/search?resultId=${encodeURIComponent(search.searchResultId)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="transition hover:text-[#16327F] hover:underline"
+                            >
+                              {search.query}
+                            </Link>
+                          ) : (
+                            search.query
+                          )}
                         </td>
                         <td className="px-4 py-3 text-gray-500">
                           {formatFilters(search.filters)}
