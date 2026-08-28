@@ -98,6 +98,8 @@ function buildPrompt(
 
   return `You are OniSource, a chemical sourcing intelligence engine.
 
+IMPORTANT: All text fields in your response MUST be written in Brazilian Portuguese (pt-BR). This includes the 'note' field, company descriptions, and any other text. Do NOT write in English.
+
 The user is searching for suppliers of: "${query}"${mpContext}
 
 Filters applied:
