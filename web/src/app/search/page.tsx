@@ -11,6 +11,7 @@ import {
   Factory,
   Globe,
   LogOut,
+  RefreshCw,
   Search,
   SearchX,
   Settings,
@@ -198,6 +199,21 @@ Para cada fornecedor, forneça:
 Priorize fabricantes com presença industrial verificável. Ordene por relevância.`;
 }
 
+function mergeCompanyNames(current: string[], additions: string[]) {
+  const merged = [...current];
+  const seen = new Set(current.map((company) => company.trim().toLowerCase()));
+
+  for (const company of additions) {
+    const normalized = company.trim().toLowerCase();
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      merged.push(company.trim());
+    }
+  }
+
+  return merged;
+}
+
 function CountryTags({
   id,
   label,
@@ -301,7 +317,9 @@ export default function SearchPage() {
   const [submittedFilters, setSubmittedFilters] = useState<SearchFilters | null>(
     null,
   );
+  const [excludedCompanies, setExcludedCompanies] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
+  const [promptFallbackVisible, setPromptFallbackVisible] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [reportMessage, setReportMessage] = useState("");
   const [reportError, setReportError] = useState("");
@@ -339,18 +357,14 @@ export default function SearchPage() {
     }
   }
 
-  async function handleSearch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const normalizedQuery = query.trim();
-    if (!normalizedQuery || !session?.email) {
+  async function performSearch(
+    searchQuery: string,
+    filters: SearchFilters,
+    exclusions: string[],
+  ) {
+    if (!session?.email) {
       return;
     }
-
-    const filters: SearchFilters = {
-      brazilOnly,
-      onlyCountries,
-      excludeCountries,
-    };
 
     setIsLoading(true);
     setErrorMessage("");
@@ -361,9 +375,10 @@ export default function SearchPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          query: normalizedQuery,
+          query: searchQuery,
           filters,
           userEmail: session.email,
+          exclude: exclusions,
         }),
       });
       const data = (await response.json()) as SearchApiResponse;
@@ -373,8 +388,8 @@ export default function SearchPage() {
         return;
       }
 
-      setSubmittedQuery(normalizedQuery);
-      setResolvedQuery(data.resolvedQuery ?? normalizedQuery);
+      setSubmittedQuery(searchQuery);
+      setResolvedQuery(data.resolvedQuery ?? searchQuery);
       setSubmittedMpCode(data.mpCode ?? null);
       setSubmittedFilters(filters);
       setResults(data.results);
@@ -383,6 +398,40 @@ export default function SearchPage() {
     } finally {
       setIsLoading(false);
     }
+  }
+
+  async function handleSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) {
+      return;
+    }
+
+    const filters: SearchFilters = {
+      brazilOnly,
+      onlyCountries,
+      excludeCountries,
+    };
+
+    setExcludedCompanies([]);
+    await performSearch(normalizedQuery, filters, []);
+  }
+
+  async function handleRetrySearch() {
+    if (!results || !submittedFilters || !submittedQuery) {
+      return;
+    }
+
+    const nextExcludedCompanies = mergeCompanyNames(
+      excludedCompanies,
+      results.map((result) => result.company_name),
+    );
+    setExcludedCompanies(nextExcludedCompanies);
+    await performSearch(
+      submittedQuery,
+      submittedFilters,
+      nextExcludedCompanies,
+    );
   }
 
   async function handleCopyPrompt() {
@@ -394,6 +443,27 @@ export default function SearchPage() {
     );
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function handleExternalPrompt(baseUrl: string) {
+    if (!advancedPrompt) {
+      return;
+    }
+
+    const promptUrl = `${baseUrl}?q=${encodeURIComponent(advancedPrompt)}`;
+    const openedWindow = window.open(promptUrl, "_blank");
+    if (openedWindow) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(advancedPrompt);
+      window.open(baseUrl, "_blank");
+      setPromptFallbackVisible(true);
+      window.setTimeout(() => setPromptFallbackVisible(false), 2000);
+    } catch {
+      setErrorMessage("Não foi possível copiar o prompt.");
+    }
   }
 
   async function handleReportSubmit(event: FormEvent<HTMLFormElement>) {
@@ -696,6 +766,24 @@ export default function SearchPage() {
               })
             )}
 
+            {results.length > 0 ? (
+              <div className="flex flex-col items-center">
+                <button
+                  type="button"
+                  onClick={handleRetrySearch}
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                >
+                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                  Não estou satisfeito, buscar novamente
+                </button>
+                {excludedCompanies.length > 0 ? (
+                  <p className="mt-2 text-xs text-gray-400">
+                    {excludedCompanies.length} fornecedores excluídos desta sessão
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             {advancedPrompt ? (
               <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
                 <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
@@ -703,23 +791,41 @@ export default function SearchPage() {
                     <Copy className="h-4 w-4" aria-hidden="true" />
                     Prompt de pesquisa avançada
                   </h2>
-                  <button
-                    type="button"
-                    onClick={handleCopyPrompt}
-                    className="inline-flex items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-600 transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-300"
-                  >
-                    {copied ? (
-                      <>
-                        <Check className="h-4 w-4" aria-hidden="true" />
-                        Copiado
-                      </>
-                    ) : (
-                      <>
-                        <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
-                        Copiar
-                      </>
-                    )}
-                  </button>
+                  <div className="flex flex-col items-start gap-2 sm:items-end">
+                    <button
+                      type="button"
+                      onClick={handleCopyPrompt}
+                      className="inline-flex items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-600 transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                    >
+                      {copied ? (
+                        <>
+                          <Check className="h-4 w-4" aria-hidden="true" />
+                          Copiado
+                        </>
+                      ) : (
+                        <>
+                          <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
+                          Copiar
+                        </>
+                      )}
+                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleExternalPrompt("https://claude.ai/new")}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50"
+                      >
+                        Pesquisar no Claude
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleExternalPrompt("https://chatgpt.com/")}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50"
+                      >
+                        Pesquisar no ChatGPT
+                      </button>
+                    </div>
+                  </div>
                 </div>
                 <textarea
                   readOnly
@@ -821,6 +927,15 @@ export default function SearchPage() {
           className="fixed bottom-20 right-4 z-50 rounded-lg bg-emerald-700 px-4 py-3 text-sm font-medium text-white shadow sm:right-6"
         >
           Problema reportado. Obrigado!
+        </div>
+      ) : null}
+
+      {promptFallbackVisible ? (
+        <div
+          role="status"
+          className="fixed bottom-20 right-4 z-50 rounded-lg bg-gray-800 px-4 py-3 text-sm font-medium text-white shadow sm:right-6"
+        >
+          Prompt copiado — cole na conversa
         </div>
       ) : null}
     </div>

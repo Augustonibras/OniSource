@@ -24,6 +24,7 @@ interface SearchRequest {
   query: string;
   filters?: SearchFilters;
   userEmail: string;
+  exclude?: string[];
 }
 
 interface SupplierResult {
@@ -65,6 +66,17 @@ function normalizeCountries(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function normalizeCompanyNames(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((company): company is string => typeof company === "string")
+    .map((company) => company.trim())
+    .filter(Boolean);
+}
+
 function formatCountries(countries: string[], fallback: string) {
   return countries.length > 0 ? countries.join(", ") : fallback;
 }
@@ -73,11 +85,16 @@ function buildPrompt(
   query: string,
   filters: Required<SearchFilters>,
   mpCode: number | null,
+  excludedCompanies: string[],
 ) {
   const mpContext =
     mpCode === null
       ? ""
       : `\nThe user searched by internal code MP ${mpCode}, which corresponds to: ${query}. Search for suppliers of this product.`;
+  const exclusionInstruction =
+    excludedCompanies.length === 0
+      ? ""
+      : `\nIMPORTANT: Do NOT include any of these companies in your results: ${excludedCompanies.join(", ")}. Find OTHER suppliers not in this list.\n`;
 
   return `You are OniSource, a chemical sourcing intelligence engine.
 
@@ -87,6 +104,7 @@ Filters applied:
 - Exclude countries: ${formatCountries(filters.excludeCountries, "none")}
 - Search only in countries: ${formatCountries(filters.onlyCountries, "all")}
 - Brazil only: ${filters.brazilOnly}
+${exclusionInstruction}
 
 Instructions:
 1. Identify 8-15 potential suppliers (companies) for this product worldwide, respecting the country filters.
@@ -160,6 +178,7 @@ export async function POST(request: Request) {
     onlyCountries: normalizeCountries(body.filters?.onlyCountries),
     brazilOnly: body.filters?.brazilOnly === true,
   };
+  const excludedCompanies = normalizeCompanyNames(body.exclude);
 
   if (filters.brazilOnly) {
     filters.excludeCountries = [];
@@ -180,7 +199,7 @@ export async function POST(request: Request) {
   }
 
   const { resolved, mpCode } = resolveMP(query);
-  const prompt = buildPrompt(resolved, filters, mpCode);
+  const prompt = buildPrompt(resolved, filters, mpCode, excludedCompanies);
   let geminiData: GeminiResponse;
   let results: SupplierResult[];
 
