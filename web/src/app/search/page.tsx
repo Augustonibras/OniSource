@@ -21,6 +21,7 @@ import {
   SearchX,
   Settings,
   SlidersHorizontal,
+  TrendingUp,
   Warehouse,
   X,
   type LucideIcon,
@@ -925,6 +926,25 @@ export default function SearchPage() {
             </button>
           </div>
         </div>
+        <nav
+          className="mx-auto flex h-10 max-w-7xl items-end gap-6 px-4 sm:px-6 lg:px-8"
+          aria-label="Áreas do OniSource"
+        >
+          <Link
+            href="/search"
+            className="inline-flex h-10 items-center gap-1.5 border-b-2 border-[#16327F] text-sm font-medium text-[#16327F]"
+          >
+            <Search className="h-4 w-4" aria-hidden="true" />
+            Sourcing
+          </Link>
+          <Link
+            href="/sales"
+            className="inline-flex h-10 items-center gap-1.5 border-b-2 border-transparent text-sm text-gray-500 transition hover:text-gray-700"
+          >
+            <TrendingUp className="h-4 w-4" aria-hidden="true" />
+            Vendas
+          </Link>
+        </nav>
       </header>
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-9 sm:px-6 lg:px-8 lg:py-12">

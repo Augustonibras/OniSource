@@ -10,6 +10,7 @@ import {
   ChevronRight,
   History,
   LogOut,
+  TrendingUp,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -19,9 +20,11 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import { BRAZILIAN_REGIONS, CONTINENTS } from "@/data/onibras-catalog";
+
 const SESSION_KEY = "onisource_session";
 
-type AdminTab = "searches" | "tokens" | "reports";
+type AdminTab = "searches" | "sales" | "tokens" | "reports";
 type ReportStatusFilter = "" | "open" | "resolved";
 
 interface Session {
@@ -44,6 +47,26 @@ interface SearchesResponse {
   searches?: SearchRecord[];
   totalCount?: number;
   users?: string[];
+  page?: number;
+  pageSize?: number;
+  error?: string;
+}
+
+interface SalesSearchRecord {
+  id: string;
+  product_name: string;
+  product_market: string;
+  location_type: "brazil_region" | "country" | "continent";
+  location_value: string;
+  results: unknown;
+  result_count: number | null;
+  user_email: string;
+  created_at: string;
+}
+
+interface SalesSearchesResponse {
+  searches?: SalesSearchRecord[];
+  totalCount?: number;
   page?: number;
   pageSize?: number;
   error?: string;
@@ -81,6 +104,7 @@ interface ReportsResponse {
 
 const TABS: Array<{ id: AdminTab; label: string; icon: LucideIcon }> = [
   { id: "searches", label: "Histórico de Buscas", icon: History },
+  { id: "sales", label: "Prospecção", icon: TrendingUp },
   { id: "tokens", label: "Uso de Tokens", icon: BarChart3 },
   { id: "reports", label: "Problemas Reportados", icon: AlertTriangle },
 ];
@@ -164,6 +188,22 @@ function formatFilters(filters: unknown) {
   return "Sem filtros";
 }
 
+function formatSalesLocation(search: SalesSearchRecord) {
+  if (search.location_type === "brazil_region") {
+    return (
+      BRAZILIAN_REGIONS.find((region) => region.value === search.location_value)
+        ?.label ?? search.location_value
+    );
+  }
+  if (search.location_type === "continent") {
+    return (
+      CONTINENTS.find((continent) => continent.value === search.location_value)
+        ?.label ?? search.location_value
+    );
+  }
+  return search.location_value;
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const sessionValue = useSyncExternalStore(
@@ -183,6 +223,10 @@ export default function AdminPage() {
   const [searchPage, setSearchPage] = useState(1);
   const [searchTotalCount, setSearchTotalCount] = useState(0);
   const [searchPageSize, setSearchPageSize] = useState(20);
+  const [salesSearches, setSalesSearches] = useState<SalesSearchRecord[]>([]);
+  const [salesPage, setSalesPage] = useState(1);
+  const [salesTotalCount, setSalesTotalCount] = useState(0);
+  const [salesPageSize, setSalesPageSize] = useState(20);
   const [usage, setUsage] = useState<TokenUsageRecord[]>([]);
   const [totals, setTotals] = useState({
     total_searches: 0,
@@ -245,6 +289,46 @@ export default function AdminPage() {
     void loadSearches();
     return () => controller.abort();
   }, [activeTab, adminEmail, dateFrom, dateTo, filterUser, searchPage]);
+
+  useEffect(() => {
+    if (!adminEmail || activeTab !== "sales") {
+      return;
+    }
+
+    const controller = new AbortController();
+    async function loadSalesSearches() {
+      setIsLoading(true);
+      setErrorMessage("");
+      const params = new URLSearchParams({
+        userEmail: adminEmail,
+        page: String(salesPage),
+      });
+      try {
+        const response = await fetch(`/api/admin/sales-searches?${params}`, {
+          signal: controller.signal,
+        });
+        const data = (await response.json()) as SalesSearchesResponse;
+        if (!response.ok) {
+          setErrorMessage(
+            data.error ?? "Não foi possível carregar as prospecções.",
+          );
+          return;
+        }
+        setSalesSearches(data.searches ?? []);
+        setSalesTotalCount(data.totalCount ?? 0);
+        setSalesPageSize(data.pageSize ?? 20);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setErrorMessage("Não foi possível carregar as prospecções.");
+        }
+      } finally {
+        if (!controller.signal.aborted) setIsLoading(false);
+      }
+    }
+
+    void loadSalesSearches();
+    return () => controller.abort();
+  }, [activeTab, adminEmail, salesPage]);
 
   useEffect(() => {
     if (!adminEmail || activeTab !== "tokens") {
@@ -359,6 +443,10 @@ export default function AdminPage() {
   const totalPages = Math.max(
     1,
     Math.ceil(searchTotalCount / searchPageSize),
+  );
+  const salesTotalPages = Math.max(
+    1,
+    Math.ceil(salesTotalCount / salesPageSize),
   );
 
   if (!isAdmin || !session) {
@@ -572,6 +660,102 @@ export default function AdminPage() {
                     type="button"
                     disabled={searchPage >= totalPages || isLoading}
                     onClick={() => setSearchPage((page) => page + 1)}
+                    className="rounded-md p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Próxima página"
+                    title="Próxima página"
+                  >
+                    <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === "sales" ? (
+          <section className="mt-6">
+            <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-left text-sm">
+                  <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Data/Hora</th>
+                      <th className="px-4 py-3 font-medium">Usuário</th>
+                      <th className="px-4 py-3 font-medium">Produto</th>
+                      <th className="px-4 py-3 font-medium">Mercado</th>
+                      <th className="px-4 py-3 font-medium">Localização</th>
+                      <th className="px-4 py-3 text-right font-medium">
+                        Resultados
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {salesSearches.map((search) => (
+                      <tr key={search.id} className="hover:bg-gray-50">
+                        <td className="whitespace-nowrap px-4 py-3 text-gray-500">
+                          {formatDate(search.created_at)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-600">
+                          {search.user_email}
+                        </td>
+                        <td className="max-w-72 px-4 py-3 font-medium text-gray-900">
+                          <Link
+                            href={`/sales?salesResultId=${encodeURIComponent(search.id)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="transition hover:text-[#16327F] hover:underline"
+                          >
+                            {search.product_name}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-3 text-gray-500">
+                          {search.product_market}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500">
+                          {formatSalesLocation(search)}
+                        </td>
+                        <td className="px-4 py-3 text-right text-gray-600">
+                          {formatNumber(
+                            search.result_count ?? countResults(search.results),
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                    {!isLoading && salesSearches.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="px-4 py-10 text-center text-gray-500"
+                        >
+                          Nenhuma prospecção registrada.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3 text-sm text-gray-600">
+                <span>
+                  Página {salesPage} de {salesTotalPages} · {salesTotalCount}{" "}
+                  registros
+                </span>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    disabled={salesPage <= 1 || isLoading}
+                    onClick={() =>
+                      setSalesPage((page) => Math.max(1, page - 1))
+                    }
+                    className="rounded-md p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Página anterior"
+                    title="Página anterior"
+                  >
+                    <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={salesPage >= salesTotalPages || isLoading}
+                    onClick={() => setSalesPage((page) => page + 1)}
                     className="rounded-md p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Próxima página"
                     title="Próxima página"
