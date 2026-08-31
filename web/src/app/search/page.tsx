@@ -36,6 +36,11 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import {
+  appendAnnotationHistory,
+  groupAnnotationHistory,
+  latestAnnotation,
+} from "@/lib/annotation-history";
 import { supabase } from "../../lib/supabase";
 
 const SESSION_KEY = "onisource_session";
@@ -477,7 +482,7 @@ export default function SearchPage() {
   const [isCachedResult, setIsCachedResult] = useState(false);
   const [savedResultCreatedAt, setSavedResultCreatedAt] = useState("");
   const [annotations, setAnnotations] = useState<
-    Record<string, SupplierAnnotation>
+    Record<string, SupplierAnnotation[]>
   >({});
   const [annotationDrafts, setAnnotationDrafts] = useState<
     Record<string, AnnotationDraft>
@@ -509,11 +514,12 @@ export default function SearchPage() {
         return;
       }
 
-      const nextAnnotations: Record<string, SupplierAnnotation> = {};
-      for (const annotation of data.annotations ?? []) {
-        nextAnnotations[supplierKey(annotation.supplier_name)] = annotation;
-      }
-      setAnnotations(nextAnnotations);
+      setAnnotations(
+        groupAnnotationHistory(
+          data.annotations ?? [],
+          (annotation) => annotation.supplier_name,
+        ),
+      );
     } catch {
       setAnnotations({});
     }
@@ -753,12 +759,12 @@ export default function SearchPage() {
       if (current[key]) {
         return current;
       }
-      const annotation = annotations[key];
+      const annotation = latestAnnotation(annotations[key]);
       return {
         ...current,
         [key]: {
           status: annotation?.status ?? "new",
-          note: annotation?.note ?? "",
+          note: "",
         },
       };
     });
@@ -798,9 +804,12 @@ export default function SearchPage() {
         return;
       }
 
-      setAnnotations((current) => ({
+      setAnnotations((current) =>
+        appendAnnotationHistory(current, key, data.annotation!),
+      );
+      setAnnotationDrafts((current) => ({
         ...current,
-        [key]: data.annotation!,
+        [key]: { status: data.annotation!.status, note: "" },
       }));
     } catch {
       setErrorMessage("Não foi possível salvar a anotação.");
@@ -1153,13 +1162,14 @@ export default function SearchPage() {
                         const link = websiteUrl(result.website);
                         const confidence = CONFIDENCE_STYLES[result.confidence];
                         const key = supplierKey(result.company_name);
-                        const annotation = annotations[key];
+                        const annotationHistory = annotations[key] ?? [];
+                        const annotation = latestAnnotation(annotationHistory);
                         const statusStyle = annotation
                           ? ANNOTATION_STATUS_STYLES[annotation.status]
                           : undefined;
                         const draft = annotationDrafts[key] ?? {
                           status: annotation?.status ?? "new",
-                          note: annotation?.note ?? "",
+                          note: "",
                         };
                         const isAnnotationExpanded = expandedAnnotation === key;
 
@@ -1283,6 +1293,55 @@ export default function SearchPage() {
                                       : "Salvar"}
                                   </button>
                                 </div>
+                                {annotationHistory.length > 0 ? (
+                                  <div className="mt-4 border-t border-gray-100 pt-3">
+                                    <p className="text-xs font-medium text-gray-600">
+                                      Histórico de anotações
+                                    </p>
+                                    <ol className="mt-2 space-y-2">
+                                      {annotationHistory.map((historyItem) => {
+                                        const historyStatus =
+                                          ANNOTATION_STATUS_STYLES[
+                                            historyItem.status
+                                          ] ?? {
+                                            label: "Novo",
+                                            className:
+                                              "border border-gray-200 bg-gray-100 text-gray-600",
+                                          };
+                                        return (
+                                          <li
+                                            key={historyItem.id}
+                                            className="rounded-md bg-gray-50 px-3 py-2"
+                                          >
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                              <span
+                                                className={`rounded-md px-2 py-0.5 text-xs font-medium ${historyStatus.className}`}
+                                              >
+                                                {historyStatus.label}
+                                              </span>
+                                              <time
+                                                dateTime={historyItem.created_at}
+                                                className="text-xs text-gray-400"
+                                              >
+                                                {formatSavedDate(
+                                                  historyItem.created_at,
+                                                )}
+                                              </time>
+                                            </div>
+                                            {historyItem.note ? (
+                                              <p className="mt-2 text-xs leading-5 text-gray-600">
+                                                {historyItem.note}
+                                              </p>
+                                            ) : null}
+                                            <p className="mt-1 text-xs text-gray-400">
+                                              Registrado por {historyItem.user_email}
+                                            </p>
+                                          </li>
+                                        );
+                                      })}
+                                    </ol>
+                                  </div>
+                                ) : null}
                               </div>
                             ) : null}
                           </article>

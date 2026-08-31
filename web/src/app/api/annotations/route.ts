@@ -84,18 +84,6 @@ export async function POST(request: Request) {
 
   try {
     const supabase = createServerSupabaseClient();
-    const { data: existing, error: lookupError } = await supabase
-      .from("supplier_annotations")
-      .select("id")
-      .eq("search_result_id", searchResultId)
-      .eq("supplier_name", supplierName)
-      .limit(1)
-      .maybeSingle();
-
-    if (lookupError) {
-      return errorResponse("Unable to save supplier annotation.", 500);
-    }
-
     const values = {
       search_result_id: searchResultId,
       supplier_name: supplierName,
@@ -107,13 +95,11 @@ export async function POST(request: Request) {
       updated_at: new Date().toISOString(),
     };
 
-    const query = existing
-      ? supabase
-          .from("supplier_annotations")
-          .update(values)
-          .eq("id", existing.id)
-      : supabase.from("supplier_annotations").insert(values);
-    const { data, error } = await query.select("*").single();
+    const { data, error } = await supabase
+      .from("supplier_annotations")
+      .insert(values)
+      .select("*")
+      .single();
 
     if (error) {
       return errorResponse("Unable to save supplier annotation.", 500);
