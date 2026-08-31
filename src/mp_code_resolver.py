@@ -38,6 +38,7 @@ class ResolvedMaterial:
     input_mp_code: str
     catalog_mp_code: str
     product_name: str
+    cas_number: str | None = None
 
 
 def normalize_mp_code(input_mp_code: str) -> str:
@@ -61,8 +62,8 @@ class MPCodeResolver:
         self.catalog_path = Path(catalog_path)
         self._products_by_code = self._load_catalog()
 
-    def _load_catalog(self) -> dict[str, tuple[str, str]]:
-        products_by_code: dict[str, tuple[str, str]] = {}
+    def _load_catalog(self) -> dict[str, tuple[str, str, str | None]]:
+        products_by_code: dict[str, tuple[str, str, str | None]] = {}
 
         try:
             catalog_file = self.catalog_path.open(
@@ -75,15 +76,16 @@ class MPCodeResolver:
 
         with catalog_file:
             reader = csv.DictReader(catalog_file)
-            if reader.fieldnames != ["mp_code", "product_name"]:
+            if reader.fieldnames != ["mp_code", "product_name", "cas_number"]:
                 raise MPCatalogFormatError(
                     "Internal MP catalog must contain exactly the columns "
-                    "mp_code and product_name"
+                    "mp_code, product_name and cas_number"
                 )
 
             for line_number, row in enumerate(reader, start=2):
                 raw_code = row["mp_code"]
                 product_name = row["product_name"]
+                raw_cas_number = row["cas_number"]
                 if raw_code is None or product_name is None or not product_name.strip():
                     raise MPCatalogFormatError(
                         f"Incomplete internal MP catalog row at line {line_number}"
@@ -96,12 +98,17 @@ class MPCodeResolver:
                         f"Invalid mp_code at catalog line {line_number}"
                     ) from error
 
+                cas_number = raw_cas_number.strip() if raw_cas_number else None
                 existing = products_by_code.get(normalized_code)
                 if existing is not None and existing[1] != product_name:
                     raise MPCatalogFormatError(
                         f"Conflicting catalog entries for {normalized_code}"
                     )
-                products_by_code[normalized_code] = (raw_code, product_name)
+                products_by_code[normalized_code] = (
+                    raw_code,
+                    product_name,
+                    cas_number,
+                )
 
         return products_by_code
 
@@ -111,11 +118,12 @@ class MPCodeResolver:
         if catalog_entry is None:
             raise MPCodeNotFoundError(input_mp_code)
 
-        catalog_mp_code, product_name = catalog_entry
+        catalog_mp_code, product_name, cas_number = catalog_entry
         return ResolvedMaterial(
             input_mp_code=input_mp_code,
             catalog_mp_code=catalog_mp_code,
             product_name=product_name,
+            cas_number=cas_number,
         )
 
 

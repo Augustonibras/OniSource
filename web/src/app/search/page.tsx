@@ -60,6 +60,10 @@ interface SupplierResult {
   role: SupplierRole;
   confidence: Confidence;
   notes: string;
+  evidence_score?: number;
+  classification_feedback?: ClassificationFeedback | null;
+  feedback_user_email?: string | null;
+  previously_verified?: boolean;
 }
 
 interface SearchFilters {
@@ -96,6 +100,11 @@ type AnnotationStatus =
   | "quoted"
   | "sample_requested"
   | "rejected";
+type ClassificationFeedback =
+  | "MANUFACTURER_CONFIRMED"
+  | "DISTRIBUTOR_CONFIRMED"
+  | "TRADER_CONFIRMED"
+  | "IRRELEVANT";
 
 interface SupplierAnnotation {
   id: string;
@@ -108,11 +117,13 @@ interface SupplierAnnotation {
   user_email: string;
   created_at: string;
   updated_at: string;
+  classification_feedback: ClassificationFeedback | null;
 }
 
 interface AnnotationDraft {
   status: AnnotationStatus;
   note: string;
+  classificationFeedback: ClassificationFeedback | "";
 }
 
 interface RfqDraft {
@@ -188,6 +199,24 @@ const ANNOTATION_STATUS_OPTIONS: Array<{
   { value: "sample_requested", label: "Amostra solicitada" },
   { value: "rejected", label: "Descartado" },
 ];
+
+const CLASSIFICATION_FEEDBACK_OPTIONS: Array<{
+  value: ClassificationFeedback | "";
+  label: string;
+}> = [
+  { value: "", label: "Não informado" },
+  { value: "MANUFACTURER_CONFIRMED", label: "Fabricante confirmado" },
+  { value: "DISTRIBUTOR_CONFIRMED", label: "Distribuidor confirmado" },
+  { value: "TRADER_CONFIRMED", label: "Trader confirmado" },
+  { value: "IRRELEVANT", label: "Irrelevante" },
+];
+
+const CLASSIFICATION_FEEDBACK_LABELS: Record<ClassificationFeedback, string> = {
+  MANUFACTURER_CONFIRMED: "Fabricante confirmado",
+  DISTRIBUTOR_CONFIRMED: "Distribuidor confirmado",
+  TRADER_CONFIRMED: "Trader confirmado",
+  IRRELEVANT: "Irrelevante",
+};
 
 const ANNOTATION_STATUS_STYLES: Partial<
   Record<AnnotationStatus, { label: string; className: string }>
@@ -765,6 +794,7 @@ export default function SearchPage() {
         [key]: {
           status: annotation?.status ?? "new",
           note: "",
+          classificationFeedback: annotation?.classification_feedback ?? "",
         },
       };
     });
@@ -777,7 +807,11 @@ export default function SearchPage() {
     }
 
     const key = supplierKey(result.company_name);
-    const draft = annotationDrafts[key] ?? { status: "new", note: "" };
+    const draft = annotationDrafts[key] ?? {
+      status: "new",
+      note: "",
+      classificationFeedback: "",
+    };
     setSavingAnnotation(key);
     setErrorMessage("");
 
@@ -792,6 +826,7 @@ export default function SearchPage() {
           product_query: resolvedQuery || submittedQuery,
           status: draft.status,
           note: draft.note,
+          classification_feedback: draft.classificationFeedback || null,
           user_email: session.email,
         }),
       });
@@ -809,7 +844,11 @@ export default function SearchPage() {
       );
       setAnnotationDrafts((current) => ({
         ...current,
-        [key]: { status: data.annotation!.status, note: "" },
+        [key]: {
+          status: data.annotation!.status,
+          note: "",
+          classificationFeedback: data.annotation!.classification_feedback ?? "",
+        },
       }));
     } catch {
       setErrorMessage("Não foi possível salvar a anotação.");
@@ -1167,9 +1206,17 @@ export default function SearchPage() {
                         const statusStyle = annotation
                           ? ANNOTATION_STATUS_STYLES[annotation.status]
                           : undefined;
+                        const classificationFeedback =
+                          annotation?.classification_feedback ??
+                          result.classification_feedback ??
+                          null;
+                        const feedbackUser =
+                          annotation?.user_email ?? result.feedback_user_email;
                         const draft = annotationDrafts[key] ?? {
                           status: annotation?.status ?? "new",
                           note: "",
+                          classificationFeedback:
+                            annotation?.classification_feedback ?? "",
                         };
                         const isAnnotationExpanded = expandedAnnotation === key;
 
@@ -1206,6 +1253,15 @@ export default function SearchPage() {
                                     {statusStyle.label}
                                   </span>
                                 ) : null}
+                                {classificationFeedback ? (
+                                  <span className="shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                                    {result.previously_verified
+                                      ? "Verificado anteriormente — "
+                                      : "✓ "}
+                                    {CLASSIFICATION_FEEDBACK_LABELS[classificationFeedback]}
+                                    {feedbackUser ? ` por ${feedbackUser}` : ""}
+                                  </span>
+                                ) : null}
                                 <span
                                   className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ${confidence.className}`}
                                 >
@@ -1216,6 +1272,11 @@ export default function SearchPage() {
                             <p className="mt-1 text-sm leading-6 text-gray-500">
                               {result.notes}
                             </p>
+                            {typeof result.evidence_score === "number" ? (
+                              <p className="mt-2 text-xs text-gray-400">
+                                Confiança: {result.evidence_score}/150
+                              </p>
+                            ) : null}
                             <div className="mt-3 flex justify-end gap-3">
                               <button
                                 type="button"
@@ -1240,7 +1301,7 @@ export default function SearchPage() {
                             </div>
                             {isAnnotationExpanded ? (
                               <div className="mt-3 border-t border-gray-100 pt-3">
-                                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto] sm:items-end">
+                                <div className="grid gap-2 sm:grid-cols-2 sm:items-end lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto]">
                                   <label className="text-xs text-gray-500">
                                     Status
                                     <select
@@ -1262,6 +1323,34 @@ export default function SearchPage() {
                                           {option.label}
                                         </option>
                                       ))}
+                                    </select>
+                                  </label>
+                                  <label className="text-xs text-gray-500">
+                                    Classificação real
+                                    <select
+                                      value={draft.classificationFeedback}
+                                      onChange={(event) =>
+                                        setAnnotationDrafts((current) => ({
+                                          ...current,
+                                          [key]: {
+                                            ...draft,
+                                            classificationFeedback: event.target
+                                              .value as ClassificationFeedback | "",
+                                          },
+                                        }))
+                                      }
+                                      className="mt-1 h-8 w-full rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-[#16327F]"
+                                    >
+                                      {CLASSIFICATION_FEEDBACK_OPTIONS.map(
+                                        (option) => (
+                                          <option
+                                            key={option.value || "none"}
+                                            value={option.value}
+                                          >
+                                            {option.label}
+                                          </option>
+                                        ),
+                                      )}
                                     </select>
                                   </label>
                                   <label className="text-xs text-gray-500">
@@ -1331,6 +1420,13 @@ export default function SearchPage() {
                                             {historyItem.note ? (
                                               <p className="mt-2 text-xs leading-5 text-gray-600">
                                                 {historyItem.note}
+                                              </p>
+                                            ) : null}
+                                            {historyItem.classification_feedback ? (
+                                              <p className="mt-1 text-xs font-medium text-emerald-700">
+                                                ✓ {CLASSIFICATION_FEEDBACK_LABELS[
+                                                  historyItem.classification_feedback
+                                                ]}
                                               </p>
                                             ) : null}
                                             <p className="mt-1 text-xs text-gray-400">
