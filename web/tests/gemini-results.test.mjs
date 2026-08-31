@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractJsonArray } from "../src/lib/gemini-results.ts";
+import {
+  extractJsonArray,
+  extractJsonValue,
+} from "../src/lib/gemini-results.ts";
+
+test("extracts a classification object from a json markdown fence", () => {
+  assert.equal(
+    extractJsonValue(
+      '```json\n{"role":"MANUFACTURER","citation":"Own {plant}","confidence":"HIGH"}\n```',
+    ),
+    '{"role":"MANUFACTURER","citation":"Own {plant}","confidence":"HIGH"}',
+  );
+});
 
 test("extracts an array from a json markdown fence", () => {
   assert.equal(

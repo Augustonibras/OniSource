@@ -1,5 +1,6 @@
 import industrialDirectories from "../../../config/industrial_directories.json";
 
+import { extractJsonValue } from "./gemini-results";
 import {
   renderClassifierV9Prompt,
   type ClassifierPromptInput,
@@ -351,12 +352,14 @@ async function classifyDomain(
   }
   const data = (await response.json()) as GeminiResponse;
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  console.log("Raw Gemini classification response:", text ?? "");
   if (!text?.trim()) {
     throw new SearchPipelineError("Gemini returned an empty classification.", 502);
   }
+  const jsonText = extractJsonValue(text);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(jsonText ?? "");
   } catch {
     throw new SearchPipelineError("Gemini returned invalid classification JSON.", 502);
   }
