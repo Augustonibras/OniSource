@@ -1,17 +1,19 @@
 import { resolveMP } from "@/data/mp-codes";
 import { buildProductIdentity } from "@/lib/product-identity";
 import {
-  isFreshClassification,
+  CLASSIFICATION_CACHE_TTL_MS,
   SEARCH_TIME_BUDGET_MS,
 } from "@/lib/search-execution";
 import { calculateEvidenceScore } from "@/lib/search-quality";
+import { CLASSIFIER_V9_PROMPT_VERSION } from "@/lib/prompts/classifier-v9";
 import {
   CONFIDENCE_LEVELS,
-  normalizeResultDomain,
   runSearchPipeline,
   SearchPipelineError,
   SUPPLIER_ROLES,
   type Confidence,
+  type DomainClassificationCache,
+  type DomainClassificationCacheEntry,
   type SupplierResult,
   type SupplierRole,
 } from "@/lib/search-pipeline";
@@ -103,13 +105,66 @@ function feedbackRole(feedback: ClassificationFeedback): SupplierRole | null {
   return null;
 }
 
+function createDomainClassificationCache(
+  supabase: SupabaseClient,
+  productCacheKey: string,
+): DomainClassificationCache {
+  return {
+    async load(domains) {
+      const uniqueDomains = [...new Set(domains)].filter(Boolean);
+      if (uniqueDomains.length === 0) return [];
+
+      const cutoff = new Date(
+        Date.now() - CLASSIFICATION_CACHE_TTL_MS,
+      ).toISOString();
+      const { data, error } = await supabase
+        .from("domain_classification_cache")
+        .select("domain,classification,citation_verified,evidence_truncated")
+        .eq("product_cache_key", productCacheKey)
+        .eq("prompt_version", CLASSIFIER_V9_PROMPT_VERSION)
+        .gte("created_at", cutoff)
+        .in("domain", uniqueDomains);
+      if (error) throw new Error(error.message);
+
+      return (data ?? []).map(
+        (row): DomainClassificationCacheEntry => ({
+          domain: row.domain as string,
+          classification:
+            row.classification as DomainClassificationCacheEntry["classification"],
+          citationVerified: row.citation_verified as boolean,
+          evidenceTruncated: row.evidence_truncated as boolean,
+        }),
+      );
+    },
+    async save(entries) {
+      if (entries.length === 0) return;
+      const createdAt = new Date().toISOString();
+      const { error } = await supabase
+        .from("domain_classification_cache")
+        .upsert(
+          entries.map((entry) => ({
+            product_cache_key: productCacheKey,
+            domain: entry.domain,
+            prompt_version: CLASSIFIER_V9_PROMPT_VERSION,
+            classification: entry.classification,
+            citation_verified: entry.citationVerified,
+            evidence_truncated: entry.evidenceTruncated,
+            created_at: createdAt,
+          })),
+          { onConflict: "product_cache_key,domain,prompt_version" },
+        );
+      if (error) throw new Error(error.message);
+    },
+  };
+}
+
 async function loadHumanFeedback(
   supabase: SupabaseClient,
   productCacheKey: string,
 ) {
   const { data: savedRows, error: savedRowsError } = await supabase
     .from("search_results")
-    .select("id,results,created_at")
+    .select("id,results")
     .eq("product_cache_key", productCacheKey)
     .order("created_at", { ascending: false })
     .limit(100);
@@ -117,29 +172,16 @@ async function loadHumanFeedback(
     if (savedRowsError) {
       console.error("Unable to load prior product results for feedback.", savedRowsError);
     }
-    return {
-      priorFeedbackResults: [],
-      irrelevantCompanies: [],
-      cachedDomainResults: [],
-    };
+    return { priorFeedbackResults: [], irrelevantCompanies: [] };
   }
 
   const searchIds = savedRows.map((row) => row.id as string);
   const resultByName = new Map<string, SupplierResult>();
-  const cachedByDomain = new Map<string, SupplierResult>();
   for (const row of savedRows) {
     if (!Array.isArray(row.results)) continue;
     for (const result of row.results) {
       if (isSupplierResult(result)) {
         resultByName.set(normalizeCompanyName(result.company_name), result);
-        const domain = normalizeResultDomain(result.website);
-        if (
-          domain &&
-          isFreshClassification(row.created_at as string) &&
-          !cachedByDomain.has(domain)
-        ) {
-          cachedByDomain.set(domain, result);
-        }
       }
     }
   }
@@ -151,11 +193,7 @@ async function loadHumanFeedback(
     .order("created_at", { ascending: true });
   if (feedbackError) {
     console.error("Unable to load structured supplier feedback.", feedbackError);
-    return {
-      priorFeedbackResults: [],
-      irrelevantCompanies: [],
-      cachedDomainResults: [...cachedByDomain.values()],
-    };
+    return { priorFeedbackResults: [], irrelevantCompanies: [] };
   }
 
   const latestByName = new Map<string, FeedbackAnnotation>();
@@ -196,11 +234,7 @@ async function loadHumanFeedback(
         feedback.classification_feedback === "DISTRIBUTOR_CONFIRMED",
     });
   }
-  return {
-    priorFeedbackResults,
-    irrelevantCompanies,
-    cachedDomainResults: [...cachedByDomain.values()],
-  };
+  return { priorFeedbackResults, irrelevantCompanies };
 }
 
 async function recordSearchHistory(
@@ -328,7 +362,6 @@ async function handleSearchRequest(request: Request, requestStartedAt: number) {
       : {
           priorFeedbackResults: [],
           irrelevantCompanies: [],
-          cachedDomainResults: [],
         };
     const pipeline = await runSearchPipeline({
       productContext: resolved,
@@ -338,7 +371,9 @@ async function handleSearchRequest(request: Request, requestStartedAt: number) {
       geminiApiKey,
       priorFeedbackResults: feedback.priorFeedbackResults,
       irrelevantCompanies: feedback.irrelevantCompanies,
-      cachedDomainResults: feedback.cachedDomainResults,
+      classificationCache: supabase
+        ? createDomainClassificationCache(supabase, productIdentity.cacheKey)
+        : undefined,
       timeBudgetMs: Math.max(
         1,
         SEARCH_TIME_BUDGET_MS - (performance.now() - requestStartedAt),
