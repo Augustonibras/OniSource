@@ -674,9 +674,28 @@ export default function SearchPage() {
           forceRefresh,
         }),
       });
-      const data = (await response.json()) as SearchApiResponse;
+      const responseText = await response.text();
+      let data: SearchApiResponse;
+      try {
+        data = JSON.parse(responseText) as SearchApiResponse;
+      } catch {
+        console.error("Search API returned a non-JSON response.", {
+          status: response.status,
+          body: responseText,
+        });
+        setErrorMessage(
+          response.status === 504
+            ? "A pesquisa excedeu o tempo limite. Tente novamente."
+            : "Não foi possível conectar ao serviço de pesquisa.",
+        );
+        return;
+      }
 
       if (!response.ok || !data.results) {
+        console.error("Search API request failed.", {
+          status: response.status,
+          error: data.error ?? "Unknown search error.",
+        });
         setErrorMessage(data.error ?? "Não foi possível concluir a pesquisa.");
         return;
       }
@@ -700,7 +719,8 @@ export default function SearchPage() {
       } else {
         window.history.replaceState(null, "", "/search");
       }
-    } catch {
+    } catch (error) {
+      console.error("Search request failed before receiving a response.", error);
       setErrorMessage("Não foi possível conectar ao serviço de pesquisa.");
     } finally {
       setIsLoading(false);
