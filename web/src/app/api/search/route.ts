@@ -1,8 +1,13 @@
 import { resolveMP } from "@/data/mp-codes";
 import { buildProductIdentity } from "@/lib/product-identity";
+import {
+  isFreshClassification,
+  SEARCH_TIME_BUDGET_MS,
+} from "@/lib/search-execution";
 import { calculateEvidenceScore } from "@/lib/search-quality";
 import {
   CONFIDENCE_LEVELS,
+  normalizeResultDomain,
   runSearchPipeline,
   SearchPipelineError,
   SUPPLIER_ROLES,
@@ -104,7 +109,7 @@ async function loadHumanFeedback(
 ) {
   const { data: savedRows, error: savedRowsError } = await supabase
     .from("search_results")
-    .select("id,results")
+    .select("id,results,created_at")
     .eq("product_cache_key", productCacheKey)
     .order("created_at", { ascending: false })
     .limit(100);
@@ -112,16 +117,29 @@ async function loadHumanFeedback(
     if (savedRowsError) {
       console.error("Unable to load prior product results for feedback.", savedRowsError);
     }
-    return { priorFeedbackResults: [], irrelevantCompanies: [] };
+    return {
+      priorFeedbackResults: [],
+      irrelevantCompanies: [],
+      cachedDomainResults: [],
+    };
   }
 
   const searchIds = savedRows.map((row) => row.id as string);
   const resultByName = new Map<string, SupplierResult>();
+  const cachedByDomain = new Map<string, SupplierResult>();
   for (const row of savedRows) {
     if (!Array.isArray(row.results)) continue;
     for (const result of row.results) {
       if (isSupplierResult(result)) {
         resultByName.set(normalizeCompanyName(result.company_name), result);
+        const domain = normalizeResultDomain(result.website);
+        if (
+          domain &&
+          isFreshClassification(row.created_at as string) &&
+          !cachedByDomain.has(domain)
+        ) {
+          cachedByDomain.set(domain, result);
+        }
       }
     }
   }
@@ -133,7 +151,11 @@ async function loadHumanFeedback(
     .order("created_at", { ascending: true });
   if (feedbackError) {
     console.error("Unable to load structured supplier feedback.", feedbackError);
-    return { priorFeedbackResults: [], irrelevantCompanies: [] };
+    return {
+      priorFeedbackResults: [],
+      irrelevantCompanies: [],
+      cachedDomainResults: [...cachedByDomain.values()],
+    };
   }
 
   const latestByName = new Map<string, FeedbackAnnotation>();
@@ -174,7 +196,11 @@ async function loadHumanFeedback(
         feedback.classification_feedback === "DISTRIBUTOR_CONFIRMED",
     });
   }
-  return { priorFeedbackResults, irrelevantCompanies };
+  return {
+    priorFeedbackResults,
+    irrelevantCompanies,
+    cachedDomainResults: [...cachedByDomain.values()],
+  };
 }
 
 async function recordSearchHistory(
@@ -194,7 +220,7 @@ async function recordSearchHistory(
   });
 }
 
-export async function POST(request: Request) {
+async function handleSearchRequest(request: Request, requestStartedAt: number) {
   let body: SearchRequest;
   try {
     body = (await request.json()) as SearchRequest;
@@ -299,7 +325,11 @@ export async function POST(request: Request) {
   try {
     const feedback = supabase
       ? await loadHumanFeedback(supabase, productIdentity.cacheKey)
-      : { priorFeedbackResults: [], irrelevantCompanies: [] };
+      : {
+          priorFeedbackResults: [],
+          irrelevantCompanies: [],
+          cachedDomainResults: [],
+        };
     const pipeline = await runSearchPipeline({
       productContext: resolved,
       filters,
@@ -308,6 +338,11 @@ export async function POST(request: Request) {
       geminiApiKey,
       priorFeedbackResults: feedback.priorFeedbackResults,
       irrelevantCompanies: feedback.irrelevantCompanies,
+      cachedDomainResults: feedback.cachedDomainResults,
+      timeBudgetMs: Math.max(
+        1,
+        SEARCH_TIME_BUDGET_MS - (performance.now() - requestStartedAt),
+      ),
     });
     results = pipeline.results;
     tokensUsed = pipeline.tokensUsed;
@@ -319,7 +354,9 @@ export async function POST(request: Request) {
   }
 
   let savedSearchResult: { id: string; created_at: string } | null = null;
-  if (supabase) {
+  const hasPersistenceBudget =
+    performance.now() - requestStartedAt < SEARCH_TIME_BUDGET_MS;
+  if (supabase && hasPersistenceBudget) {
     const { data, error } = await supabase
       .from("search_results")
       .insert({
@@ -342,19 +379,21 @@ export async function POST(request: Request) {
     }
   }
 
-  try {
-    const historyClient = supabase ?? createServerSupabaseClient();
-    const { error } = await recordSearchHistory(
-      historyClient,
-      userEmail,
-      query,
-      filters,
-      results,
-      tokensUsed,
-    );
-    if (error) console.error("Unable to record search history.", error);
-  } catch (error) {
-    console.error("Unable to record search history.", error);
+  if (hasPersistenceBudget) {
+    try {
+      const historyClient = supabase ?? createServerSupabaseClient();
+      const { error } = await recordSearchHistory(
+        historyClient,
+        userEmail,
+        query,
+        filters,
+        results,
+        tokensUsed,
+      );
+      if (error) console.error("Unable to record search history.", error);
+    } catch (error) {
+      console.error("Unable to record search history.", error);
+    }
   }
 
   return Response.json({
@@ -370,4 +409,16 @@ export async function POST(request: Request) {
         }
       : {}),
   });
+}
+
+export async function POST(request: Request) {
+  const startedAt = performance.now();
+  try {
+    return await handleSearchRequest(request, startedAt);
+  } finally {
+    console.info("Search pipeline timing", {
+      stage: "request_total",
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+  }
 }

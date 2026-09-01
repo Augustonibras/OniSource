@@ -5,6 +5,14 @@ import {
   repairTruncatedJsonObject,
 } from "./gemini-results";
 import {
+  CLASSIFICATION_CONCURRENCY,
+  CLASSIFICATION_TIMEOUT_MS,
+  mapWithConcurrency,
+  MAX_CLASSIFIED_DOMAINS,
+  remainingMs,
+  SEARCH_TIME_BUDGET_MS,
+} from "./search-execution";
+import {
   renderClassifierV9Prompt,
   type ClassifierPromptInput,
 } from "./prompts/classifier-v9";
@@ -22,6 +30,37 @@ const GEMINI_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
 const PAGE_BREAK = "\n--- PAGE BREAK ---\n";
 const MAX_EXPANSION_QUERIES = 6;
+
+function elapsedMs(startedAt: number) {
+  return Math.round(performance.now() - startedAt);
+}
+
+async function fetchBeforeDeadline(
+  fetchImpl: FetchImplementation,
+  input: string,
+  init: RequestInit,
+  timeoutMs: number,
+) {
+  if (timeoutMs <= 0) {
+    throw new SearchPipelineError("Search time budget exhausted.", 504);
+  }
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new SearchPipelineError("Upstream request timed out.", 504));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      fetchImpl(input, { ...init, signal: controller.signal }),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 export const SUPPLIER_ROLES = [
   "MANUFACTURER",
@@ -108,6 +147,14 @@ interface DomainEvidence {
   fromDirectory: boolean;
 }
 
+interface ClassifiedDomain {
+  evidence: DomainEvidence;
+  classification: ClassifierResponse | null;
+  citationVerified: boolean;
+  evidenceTruncated: boolean;
+  tokensUsed: number;
+}
+
 interface SearchQueryPlan {
   query: string;
   includeDomains?: string[];
@@ -116,11 +163,11 @@ interface SearchQueryPlan {
 type FetchImplementation = typeof fetch;
 
 export class SearchPipelineError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
     super(message);
+    this.status = status;
   }
 }
 
@@ -261,21 +308,34 @@ async function searchTavily(
   plan: SearchQueryPlan,
   apiKey: string,
   fetchImpl: FetchImplementation,
+  deadline: number,
 ) {
-  const response = await fetchImpl(TAVILY_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  const startedAt = performance.now();
+  const response = await fetchBeforeDeadline(
+    fetchImpl,
+    TAVILY_ENDPOINT,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: plan.query,
+        search_depth: "advanced",
+        include_answer: false,
+        include_raw_content: "text",
+        max_results: plan.includeDomains ? 5 : 10,
+        ...(plan.includeDomains ? { include_domains: plan.includeDomains } : {}),
+      }),
     },
-    body: JSON.stringify({
+    remainingMs(deadline),
+  ).finally(() => {
+    console.info("Search pipeline timing", {
+      stage: "tavily_query",
       query: plan.query,
-      search_depth: "advanced",
-      include_answer: false,
-      include_raw_content: "text",
-      max_results: plan.includeDomains ? 5 : 10,
-      ...(plan.includeDomains ? { include_domains: plan.includeDomains } : {}),
-    }),
+      durationMs: elapsedMs(startedAt),
+    });
   });
   if (!response.ok) {
     const responseBody = (await response.text()).replaceAll(apiKey, "***");
@@ -321,6 +381,7 @@ async function classifyDomain(
   productContext: string,
   apiKey: string,
   fetchImpl: FetchImplementation,
+  timeoutMs: number,
 ) {
   const promptInput: ClassifierPromptInput = {
     domain: evidence.domain,
@@ -333,21 +394,26 @@ async function classifyDomain(
       : "",
   };
   const rendered = renderClassifierV9Prompt(promptInput);
-  const response = await fetchImpl(GEMINI_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey,
-    },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: rendered.prompt }] }],
-      generationConfig: {
-        temperature: 0,
-        responseMimeType: "application/json",
-        maxOutputTokens: 4096,
+  const response = await fetchBeforeDeadline(
+    fetchImpl,
+    GEMINI_ENDPOINT,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
       },
-    }),
-  });
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: rendered.prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: "application/json",
+          maxOutputTokens: 4096,
+        },
+      }),
+    },
+    timeoutMs,
+  );
   if (!response.ok) {
     throw new SearchPipelineError(
       response.status === 429
@@ -420,19 +486,75 @@ async function classifyEvidence(
   productContext: string,
   geminiApiKey: string,
   fetchImpl: FetchImplementation,
+  deadline: number,
+  cachedResultsByDomain: Map<string, SupplierResult>,
+  batchLabel: "round_one" | "round_two",
 ) {
-  const classified = await Promise.all(
-    evidenceItems.map(async (evidence) => ({
-      evidence,
-      ...(await classifyDomain(
-        evidence,
-        productContext,
-        geminiApiKey,
-        fetchImpl,
-      )),
-    })),
+  const startedAt = performance.now();
+  const cachedResults: SupplierResult[] = [];
+  const pendingEvidence = evidenceItems.filter((evidence) => {
+    const cached = cachedResultsByDomain.get(evidence.domain);
+    if (!cached) return true;
+    cachedResults.push(cached);
+    return false;
+  });
+  console.info("Search pipeline classification started", {
+    batch: batchLabel,
+    domainCount: evidenceItems.length,
+    cacheHits: cachedResults.length,
+    pendingCount: pendingEvidence.length,
+  });
+  const classified = await mapWithConcurrency(
+    pendingEvidence,
+    CLASSIFICATION_CONCURRENCY,
+    async (evidence): Promise<ClassifiedDomain | undefined> => {
+      const timeoutMs = Math.min(
+        CLASSIFICATION_TIMEOUT_MS,
+        remainingMs(deadline),
+      );
+      if (timeoutMs <= 0) return undefined;
+      const domainStartedAt = performance.now();
+      try {
+        const classification = await classifyDomain(
+          evidence,
+          productContext,
+          geminiApiKey,
+          fetchImpl,
+          timeoutMs,
+        );
+        return {
+          evidence,
+          classification: classification.classification,
+          citationVerified: classification.citationVerified,
+          evidenceTruncated: classification.evidenceTruncated,
+          tokensUsed: classification.tokensUsed,
+        };
+      } catch (error) {
+        console.warn("Gemini classification discarded.", {
+          domain: evidence.domain,
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+        return undefined;
+      } finally {
+        console.info("Search pipeline timing", {
+          stage: "gemini_classification",
+          domain: evidence.domain,
+          durationMs: elapsedMs(domainStartedAt),
+        });
+      }
+    },
   );
-  const results = classified.flatMap((item) => {
+  console.info("Search pipeline timing", {
+    stage: "classification_batch",
+    batch: batchLabel,
+    domainCount: evidenceItems.length,
+    cacheHits: cachedResults.length,
+    durationMs: elapsedMs(startedAt),
+  });
+  const completed = classified.filter(
+    (item): item is ClassifiedDomain => item !== undefined,
+  );
+  const results = completed.flatMap((item) => {
     if (
       !item.classification ||
       !SUPPLIER_ROLES.includes(item.classification.role as SupplierRole)
@@ -479,8 +601,9 @@ async function classifyEvidence(
     ];
   });
   return {
-    results,
-    tokensUsed: classified.reduce((sum, item) => sum + item.tokensUsed, 0),
+    results: [...cachedResults, ...results],
+    tokensUsed: completed.reduce((sum, item) => sum + item.tokensUsed, 0),
+    durationMs: elapsedMs(startedAt),
   };
 }
 
@@ -497,12 +620,24 @@ export async function runSearchPipeline(
     geminiApiKey: string;
     priorFeedbackResults?: SupplierResult[];
     irrelevantCompanies?: string[];
+    cachedDomainResults?: SupplierResult[];
+    timeBudgetMs?: number;
   },
   fetchImpl: FetchImplementation = fetch,
 ) {
+  const pipelineStartedAt = performance.now();
+  const deadline =
+    pipelineStartedAt + (input.timeBudgetMs ?? SEARCH_TIME_BUDGET_MS);
   const irrelevant = new Set(
     (input.irrelevantCompanies ?? []).map(normalizeCompanyName),
   );
+  const cachedResultsByDomain = new Map<string, SupplierResult>();
+  for (const result of input.cachedDomainResults ?? []) {
+    const domain = normalizeResultDomain(result.website);
+    if (domain && !cachedResultsByDomain.has(domain)) {
+      cachedResultsByDomain.set(domain, result);
+    }
+  }
   const exclusions = [
     ...input.excludedCompanies,
     ...(input.irrelevantCompanies ?? []),
@@ -515,42 +650,68 @@ export async function runSearchPipeline(
   const roundOneRaw = (
     await Promise.all(
       roundOnePlans.map((plan) =>
-        searchTavily(plan, input.tavilyApiKey, fetchImpl),
+        searchTavily(plan, input.tavilyApiKey, fetchImpl, deadline),
       ),
     )
   ).flat();
+  const roundOneEvidence = groupEvidenceByDomain(roundOneRaw).slice(
+    0,
+    MAX_CLASSIFIED_DOMAINS,
+  );
   const roundOne = await classifyEvidence(
-    groupEvidenceByDomain(roundOneRaw),
+    roundOneEvidence,
     input.productContext,
     input.geminiApiKey,
     fetchImpl,
+    deadline,
+    cachedResultsByDomain,
+    "round_one",
   );
 
-  const roundTwoPlans = buildRoundTwoQueries(
-    input.productContext,
-    roundOne.results,
-  );
-  const roundTwoRaw = (
-    await Promise.all(
-      roundTwoPlans.map((plan) =>
-        searchTavily(plan, input.tavilyApiKey, fetchImpl),
-      ),
-    )
-  ).flat();
-  const roundOneDomains = new Set(
-    roundOneRaw
-      .map((result) => normalizeResultDomain(result.url ?? ""))
-      .filter(Boolean),
-  );
-  const newRoundTwoEvidence = groupEvidenceByDomain(roundTwoRaw).filter(
-    (item) => !roundOneDomains.has(item.domain),
-  );
-  const roundTwo = await classifyEvidence(
-    newRoundTwoEvidence,
-    input.productContext,
-    input.geminiApiKey,
-    fetchImpl,
-  );
+  let roundTwo = {
+    results: [] as SupplierResult[],
+    tokensUsed: 0,
+    durationMs: 0,
+  };
+  let classifiedDomainCount = roundOneEvidence.length;
+  const remainingDomainCapacity =
+    MAX_CLASSIFIED_DOMAINS - roundOneEvidence.length;
+  if (remainingDomainCapacity > 0 && remainingMs(deadline) > 0) {
+    const roundTwoPlans = buildRoundTwoQueries(
+      input.productContext,
+      roundOne.results,
+    );
+    let roundTwoRaw: TavilyResult[] = [];
+    try {
+      roundTwoRaw = (
+        await Promise.all(
+          roundTwoPlans.map((plan) =>
+            searchTavily(plan, input.tavilyApiKey, fetchImpl, deadline),
+          ),
+        )
+      ).flat();
+    } catch (error) {
+      console.info("Search pipeline round two skipped.", {
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+    const roundOneDomains = new Set(
+      roundOneEvidence.map((item) => item.domain),
+    );
+    const newRoundTwoEvidence = groupEvidenceByDomain(roundTwoRaw)
+      .filter((item) => !roundOneDomains.has(item.domain))
+      .slice(0, remainingDomainCapacity);
+    classifiedDomainCount += newRoundTwoEvidence.length;
+    roundTwo = await classifyEvidence(
+      newRoundTwoEvidence,
+      input.productContext,
+      input.geminiApiKey,
+      fetchImpl,
+      deadline,
+      cachedResultsByDomain,
+      "round_two",
+    );
+  }
 
   const combined = [
     ...(input.priorFeedbackResults ?? []),
@@ -567,6 +728,12 @@ export async function runSearchPipeline(
     combined,
     (result) => result.website,
   ).sort((left, right) => right.evidence_score - left.evidence_score);
+  console.info("Search pipeline timing", {
+    stage: "pipeline_total",
+    classifiedDomainCount,
+    classificationDurationMs: roundOne.durationMs + roundTwo.durationMs,
+    durationMs: elapsedMs(pipelineStartedAt),
+  });
   return {
     results,
     tokensUsed: roundOne.tokensUsed + roundTwo.tokensUsed,
