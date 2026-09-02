@@ -6,9 +6,8 @@ import {
 } from "@/lib/search-execution";
 import { calculateEvidenceScore } from "@/lib/search-quality";
 import {
-  hasMinimumEvidenceScore,
+  companyNameFromDomain,
   isBlockedCompanyDomain,
-  isClearlyNonCompanyTitle,
 } from "@/lib/search-result-quality";
 import { CLASSIFIER_V9_PROMPT_VERSION } from "@/lib/prompts/classifier-v9";
 import {
@@ -104,11 +103,7 @@ function normalizeCompanyName(value: string) {
 }
 
 function isDisplayableResult(result: SupplierResult) {
-  return (
-    hasMinimumEvidenceScore(result.evidence_score) &&
-    !isBlockedCompanyDomain(result.website) &&
-    !isClearlyNonCompanyTitle(result.company_name)
-  );
+  return !isBlockedCompanyDomain(result.website);
 }
 
 function feedbackRole(feedback: ClassificationFeedback): SupplierRole | null {
@@ -226,6 +221,7 @@ async function loadHumanFeedback(
     const signals = previous.evidence_signals ?? EMPTY_SIGNALS;
     priorFeedbackResults.push({
       ...previous,
+      company_name: companyNameFromDomain(previous.website),
       role,
       citation: previous.citation ?? "",
       citation_verified: previous.citation_verified ?? false,
@@ -333,9 +329,12 @@ async function handleSearchRequest(request: Request, requestStartedAt: number) {
           row.results.every(isSupplierResult),
       );
       if (cachedResult) {
-        const cachedResults = (cachedResult.results as SupplierResult[]).filter(
-          isDisplayableResult,
-        );
+        const cachedResults = (cachedResult.results as SupplierResult[])
+          .filter(isDisplayableResult)
+          .map((result) => ({
+            ...result,
+            company_name: companyNameFromDomain(result.website),
+          }));
         if (cachedResults.length > 0) {
           const { error: historyError } = await recordSearchHistory(
             supabase,

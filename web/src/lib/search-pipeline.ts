@@ -25,10 +25,9 @@ import {
   type EvidenceSignals,
 } from "./search-quality";
 import {
+  companyNameFromDomain,
   extractCountryFromEvidence,
-  hasMinimumEvidenceScore,
   isBlockedCompanyDomain,
-  isClearlyNonCompanyTitle,
 } from "./search-result-quality";
 
 const TAVILY_ENDPOINT = "https://api.tavily.com/search";
@@ -209,11 +208,7 @@ function groupEvidenceByDomain(results: TavilyResult[]): DomainEvidence[] {
     if (!result.url) continue;
     const domain = normalizeResultDomain(result.url);
     const title = result.title?.trim() || domain;
-    if (
-      !domain ||
-      isBlockedCompanyDomain(domain) ||
-      isClearlyNonCompanyTitle(title)
-    ) {
+    if (!domain || isBlockedCompanyDomain(domain)) {
       continue;
     }
     const content = (result.raw_content || result.content || "").trim();
@@ -301,6 +296,15 @@ export function buildRoundOneQueries(
   return [
     {
       query: `${productContext} manufacturer distributor supplier${location}${suffix}`,
+    },
+    {
+      query: `${productContext} manufacturer producer factory${location}${suffix}`,
+    },
+    {
+      query: `${productContext} distributor dealer reseller${location}${suffix}`,
+    },
+    {
+      query: `${productContext} importer exporter trader${location}${suffix}`,
     },
     {
       query: `${productContext} manufacturer supplier${location}${suffix}`,
@@ -501,11 +505,6 @@ async function classifyDomain(
   };
 }
 
-function companyNameFromTitle(title: string, domain: string) {
-  const name = title.split(/\s+[|–—-]\s+/)[0]?.trim();
-  return name || domain;
-}
-
 async function classifyEvidence(
   evidenceItems: DomainEvidence[],
   productContext: string,
@@ -642,10 +641,7 @@ async function classifyEvidence(
       : (item.classification.role as SupplierRole);
     return [
       {
-        company_name: companyNameFromTitle(
-          item.evidence.title,
-          item.evidence.domain,
-        ),
+        company_name: companyNameFromDomain(item.evidence.domain),
         website: `https://${item.evidence.domain}`,
         country: extractCountryFromEvidence(
           item.evidence.domain,
@@ -786,9 +782,7 @@ export async function runSearchPipeline(
     ...roundTwo.results,
   ].filter(
     (result) =>
-      hasMinimumEvidenceScore(result.evidence_score) &&
       !isBlockedCompanyDomain(result.website) &&
-      !isClearlyNonCompanyTitle(result.company_name) &&
       !irrelevant.has(normalizeCompanyName(result.company_name)) &&
       !input.excludedCompanies.some(
         (company) => normalizeCompanyName(company) === normalizeCompanyName(result.company_name),
