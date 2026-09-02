@@ -24,6 +24,12 @@ import {
   type ClassificationFeedback,
   type EvidenceSignals,
 } from "./search-quality";
+import {
+  extractCountryFromEvidence,
+  hasMinimumEvidenceScore,
+  isBlockedCompanyDomain,
+  isClearlyNonCompanyTitle,
+} from "./search-result-quality";
 
 const TAVILY_ENDPOINT = "https://api.tavily.com/search";
 const GEMINI_ENDPOINT =
@@ -202,7 +208,14 @@ function groupEvidenceByDomain(results: TavilyResult[]): DomainEvidence[] {
   for (const result of results) {
     if (!result.url) continue;
     const domain = normalizeResultDomain(result.url);
-    if (!domain) continue;
+    const title = result.title?.trim() || domain;
+    if (
+      !domain ||
+      isBlockedCompanyDomain(domain) ||
+      isClearlyNonCompanyTitle(title)
+    ) {
+      continue;
+    }
     const content = (result.raw_content || result.content || "").trim();
     const fromDirectory = result.fromDirectory === true || isIndustrialDirectory(domain);
     const existing = grouped.get(domain);
@@ -218,7 +231,7 @@ function groupEvidenceByDomain(results: TavilyResult[]): DomainEvidence[] {
     }
     grouped.set(domain, {
       domain,
-      title: result.title?.trim() || domain,
+      title,
       content,
       urls: [result.url],
       fromDirectory,
@@ -634,7 +647,10 @@ async function classifyEvidence(
           item.evidence.domain,
         ),
         website: `https://${item.evidence.domain}`,
-        country: "Não informado",
+        country: extractCountryFromEvidence(
+          item.evidence.domain,
+          item.evidence.content,
+        ),
         role,
         confidence: item.classification.confidence,
         notes: item.classification.reasoning,
@@ -770,6 +786,9 @@ export async function runSearchPipeline(
     ...roundTwo.results,
   ].filter(
     (result) =>
+      hasMinimumEvidenceScore(result.evidence_score) &&
+      !isBlockedCompanyDomain(result.website) &&
+      !isClearlyNonCompanyTitle(result.company_name) &&
       !irrelevant.has(normalizeCompanyName(result.company_name)) &&
       !input.excludedCompanies.some(
         (company) => normalizeCompanyName(company) === normalizeCompanyName(result.company_name),
