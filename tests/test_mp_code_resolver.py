@@ -19,7 +19,6 @@ def test_supported_mp_code_forms_resolve_to_the_same_product() -> None:
     }
     assert [item.input_mp_code for item in resolutions] == ["MP 041", "MP041", "041"]
     assert {item.catalog_mp_code for item in resolutions} == {"MP 041"}
-    assert {item.cas_number for item in resolutions} == {"7664-38-2"}
 
 
 def test_missing_mp_code_raises_explicit_error_without_fallback() -> None:

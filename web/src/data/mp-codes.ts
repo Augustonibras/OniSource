@@ -306,12 +306,6 @@ export const MP_CODES: Record<number, string> = {
   307: 'Blend AT 200',
 };
 
-export const MP_CAS_NUMBERS: Record<number, string> = {
-  41: '7664-38-2',
-  52: '7664-38-2',
-  110: '13463-67-7',
-};
-
 // Resolve "MP XXX" queries to product names
 export function resolveMP(query: string): { resolved: string; mpCode: number | null } {
   const match = query.match(/^mp\s*(\d+)$/i);

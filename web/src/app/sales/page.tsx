@@ -58,11 +58,6 @@ type ProspectStatus =
   | "negotiating"
   | "closed"
   | "rejected";
-type ClassificationFeedback =
-  | "MANUFACTURER_CONFIRMED"
-  | "DISTRIBUTOR_CONFIRMED"
-  | "TRADER_CONFIRMED"
-  | "IRRELEVANT";
 
 interface Session {
   email: string;
@@ -108,13 +103,11 @@ interface ProspectAnnotation {
   user_email: string;
   created_at: string;
   updated_at: string;
-  classification_feedback: ClassificationFeedback | null;
 }
 
 interface AnnotationDraft {
   status: ProspectStatus;
   note: string;
-  classificationFeedback: ClassificationFeedback | "";
 }
 
 interface LocationSelection {
@@ -175,24 +168,6 @@ const STATUS_OPTIONS: Array<{ value: ProspectStatus; label: string }> = [
   { value: "closed", label: "Fechado" },
   { value: "rejected", label: "Descartado" },
 ];
-
-const CLASSIFICATION_FEEDBACK_OPTIONS: Array<{
-  value: ClassificationFeedback | "";
-  label: string;
-}> = [
-  { value: "", label: "Não informado" },
-  { value: "MANUFACTURER_CONFIRMED", label: "Fabricante confirmado" },
-  { value: "DISTRIBUTOR_CONFIRMED", label: "Distribuidor confirmado" },
-  { value: "TRADER_CONFIRMED", label: "Trader confirmado" },
-  { value: "IRRELEVANT", label: "Irrelevante" },
-];
-
-const CLASSIFICATION_FEEDBACK_LABELS: Record<ClassificationFeedback, string> = {
-  MANUFACTURER_CONFIRMED: "Fabricante confirmado",
-  DISTRIBUTOR_CONFIRMED: "Distribuidor confirmado",
-  TRADER_CONFIRMED: "Trader confirmado",
-  IRRELEVANT: "Irrelevante",
-};
 
 const STATUS_STYLES: Partial<
   Record<ProspectStatus, { label: string; className: string }>
@@ -666,7 +641,6 @@ export default function SalesPage() {
         [key]: {
           status: annotation?.status ?? "new",
           note: "",
-          classificationFeedback: annotation?.classification_feedback ?? "",
         },
       };
     });
@@ -678,11 +652,7 @@ export default function SalesPage() {
       return;
     }
     const key = prospectKey(result.company);
-    const draft = annotationDrafts[key] ?? {
-      status: "new",
-      note: "",
-      classificationFeedback: "",
-    };
+    const draft = annotationDrafts[key] ?? { status: "new", note: "" };
     setSavingAnnotation(key);
     setErrorMessage("");
     try {
@@ -696,7 +666,6 @@ export default function SalesPage() {
           product_name: submittedProduct.name,
           status: draft.status,
           note: draft.note,
-          classification_feedback: draft.classificationFeedback || null,
           user_email: session.email,
         }),
       });
@@ -713,11 +682,7 @@ export default function SalesPage() {
       );
       setAnnotationDrafts((current) => ({
         ...current,
-        [key]: {
-          status: data.annotation!.status,
-          note: "",
-          classificationFeedback: data.annotation!.classification_feedback ?? "",
-        },
+        [key]: { status: data.annotation!.status, note: "" },
       }));
     } catch {
       setErrorMessage("Não foi possível salvar a anotação.");
@@ -1177,14 +1142,10 @@ export default function SalesPage() {
                         const draft = annotationDrafts[key] ?? {
                           status: annotation?.status ?? "new",
                           note: "",
-                          classificationFeedback:
-                            annotation?.classification_feedback ?? "",
                         };
                         const statusStyle = annotation
                           ? STATUS_STYLES[annotation.status]
                           : undefined;
-                        const classificationFeedback =
-                          annotation?.classification_feedback ?? null;
                         const link = websiteUrl(result.website);
                         const expanded = expandedAnnotation === key;
                         return (
@@ -1218,14 +1179,6 @@ export default function SalesPage() {
                                     className={`rounded-md px-2 py-0.5 text-xs font-medium ${statusStyle.className}`}
                                   >
                                     {statusStyle.label}
-                                  </span>
-                                ) : null}
-                                {classificationFeedback ? (
-                                  <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                                    ✓ {CLASSIFICATION_FEEDBACK_LABELS[classificationFeedback]}
-                                    {annotation?.user_email
-                                      ? ` por ${annotation.user_email}`
-                                      : ""}
                                   </span>
                                 ) : null}
                                 <span
@@ -1262,7 +1215,7 @@ export default function SalesPage() {
                             </div>
                             {expanded ? (
                               <div className="mt-3 border-t border-gray-100 pt-3">
-                                <div className="grid gap-2 sm:grid-cols-2 sm:items-end lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto]">
+                                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto] sm:items-end">
                                   <label className="text-xs text-gray-500">
                                     Status
                                     <select
@@ -1284,34 +1237,6 @@ export default function SalesPage() {
                                           {option.label}
                                         </option>
                                       ))}
-                                    </select>
-                                  </label>
-                                  <label className="text-xs text-gray-500">
-                                    Classificação real
-                                    <select
-                                      value={draft.classificationFeedback}
-                                      onChange={(event) =>
-                                        setAnnotationDrafts((current) => ({
-                                          ...current,
-                                          [key]: {
-                                            ...draft,
-                                            classificationFeedback: event.target
-                                              .value as ClassificationFeedback | "",
-                                          },
-                                        }))
-                                      }
-                                      className="mt-1 h-8 w-full rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-[#16327F]"
-                                    >
-                                      {CLASSIFICATION_FEEDBACK_OPTIONS.map(
-                                        (option) => (
-                                          <option
-                                            key={option.value || "none"}
-                                            value={option.value}
-                                          >
-                                            {option.label}
-                                          </option>
-                                        ),
-                                      )}
                                     </select>
                                   </label>
                                   <label className="text-xs text-gray-500">
@@ -1376,13 +1301,6 @@ export default function SalesPage() {
                                             {historyItem.note ? (
                                               <p className="mt-2 text-xs leading-5 text-gray-600">
                                                 {historyItem.note}
-                                              </p>
-                                            ) : null}
-                                            {historyItem.classification_feedback ? (
-                                              <p className="mt-1 text-xs font-medium text-emerald-700">
-                                                ✓ {CLASSIFICATION_FEEDBACK_LABELS[
-                                                  historyItem.classification_feedback
-                                                ]}
                                               </p>
                                             ) : null}
                                             <p className="mt-1 text-xs text-gray-400">

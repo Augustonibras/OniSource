@@ -12,12 +12,6 @@ const STATUSES = [
   "closed",
   "rejected",
 ] as const;
-const CLASSIFICATION_FEEDBACK = [
-  "MANUFACTURER_CONFIRMED",
-  "DISTRIBUTOR_CONFIRMED",
-  "TRADER_CONFIRMED",
-  "IRRELEVANT",
-] as const;
 
 interface AnnotationRequest {
   sales_search_id?: string;
@@ -27,7 +21,6 @@ interface AnnotationRequest {
   status?: string;
   note?: string;
   user_email?: string;
-  classification_feedback?: string | null;
 }
 
 function errorResponse(error: string, status: number) {
@@ -71,7 +64,6 @@ export async function POST(request: Request) {
   const status = body.status?.trim() ?? "new";
   const note = body.note?.trim() ?? "";
   const userEmail = body.user_email?.trim().toLowerCase() ?? "";
-  const classificationFeedback = body.classification_feedback?.trim() || null;
 
   if (!UUID_PATTERN.test(salesSearchId)) {
     return errorResponse("A valid sales_search_id is required.", 400);
@@ -85,14 +77,6 @@ export async function POST(request: Request) {
   if (!STATUSES.includes(status as (typeof STATUSES)[number])) {
     return errorResponse("Invalid prospect annotation status.", 400);
   }
-  if (
-    classificationFeedback !== null &&
-    !CLASSIFICATION_FEEDBACK.includes(
-      classificationFeedback as (typeof CLASSIFICATION_FEEDBACK)[number],
-    )
-  ) {
-    return errorResponse("Invalid classification feedback.", 400);
-  }
 
   try {
     const supabase = createServerSupabaseClient();
@@ -104,7 +88,6 @@ export async function POST(request: Request) {
       status,
       note,
       user_email: userEmail,
-      classification_feedback: classificationFeedback,
       updated_at: new Date().toISOString(),
     };
     const { data, error } = await supabase
