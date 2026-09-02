@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -31,7 +32,10 @@ def test_extract_budget_preflight_stops_before_network_limit(tmp_path) -> None:
         json.dumps({"month": "2026-08", "credits_used": 699}),
         encoding="utf-8",
     )
-    budget = ExtractBudget(state_path)
+    budget = ExtractBudget(
+        state_path,
+        now_provider=lambda: datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
 
     with pytest.raises(BudgetExceededError):
         budget.ensure_batch_available(20)

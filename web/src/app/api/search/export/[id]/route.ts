@@ -1,4 +1,5 @@
 import { generateXmlSpreadsheet } from "@/lib/xml-spreadsheet";
+import { convertXmlSpreadsheetToXlsx } from "@/lib/xlsx-spreadsheet";
 import { createServerSupabaseClient } from "../../../../../lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -91,7 +92,8 @@ export async function GET(
     const { data: annotations, error: annotationsError } = await supabase
       .from("supplier_annotations")
       .select("supplier_name,status,note")
-      .eq("search_result_id", id);
+      .eq("search_result_id", id)
+      .order("created_at", { ascending: true });
 
     if (annotationsError) {
       return errorResponse("Unable to load supplier annotations.", 500);
@@ -132,7 +134,7 @@ export async function GET(
       resolvedQuery && resolvedQuery !== query && mpCode !== null && mpCode !== undefined
         ? ` (MP ${mpCode} → ${resolvedQuery})`
         : "";
-    const file = generateXmlSpreadsheet({
+    const xml = generateXmlSpreadsheet({
       title: "OniSource — Sourcing",
       subtitle: `Produto: ${query}${resolvedSubtitle}`,
       sheetName: "Fornecedores",
@@ -148,14 +150,16 @@ export async function GET(
       ],
       rows,
     });
+    const file = convertXmlSpreadsheetToXlsx(xml);
     const date = new Date(searchResult.created_at ?? Date.now())
       .toISOString()
       .slice(0, 10);
-    const filename = `OniSource_Sourcing_${filenamePart(query)}_${date}.xml`;
+    const filename = `OniSource_Sourcing_${filenamePart(query)}_${date}.xlsx`;
 
     return new Response(file, {
       headers: {
-        "Content-Type": "application/vnd.ms-excel",
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });

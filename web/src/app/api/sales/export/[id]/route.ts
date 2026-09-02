@@ -1,5 +1,7 @@
-import { generateXmlSpreadsheet } from "@/lib/xml-spreadsheet";
+import { filterSalesResultsByLocation } from "@/lib/sales-geography";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { generateXmlSpreadsheet } from "@/lib/xml-spreadsheet";
+import { convertXmlSpreadsheetToXlsx } from "@/lib/xlsx-spreadsheet";
 
 export const runtime = "nodejs";
 
@@ -83,7 +85,8 @@ export async function GET(
     const { data: annotations, error: annotationsError } = await supabase
       .from("prospect_annotations")
       .select("prospect_name,status,note")
-      .eq("sales_search_id", id);
+      .eq("sales_search_id", id)
+      .order("created_at", { ascending: true });
     if (annotationsError) {
       return errorResponse("Unable to load prospect annotations.", 500);
     }
@@ -93,9 +96,14 @@ export async function GET(
       annotationsByProspect.set(prospectKey(annotation.prospect_name), annotation);
     }
 
-    const prospects = Array.isArray(salesSearch.results)
+    const savedProspects = Array.isArray(salesSearch.results)
       ? (salesSearch.results as ProspectResult[])
       : [];
+    const prospects = filterSalesResultsByLocation(
+      savedProspects,
+      String(salesSearch.location_type ?? ""),
+      String(salesSearch.location_value ?? ""),
+    );
     const rows = prospects.map((prospect) => {
       const annotation = annotationsByProspect.get(prospectKey(prospect.company));
       const role = text(prospect.role);
@@ -114,7 +122,7 @@ export async function GET(
 
     const product = String(salesSearch.product_name ?? "produto");
     const location = String(salesSearch.location_value ?? "local");
-    const file = generateXmlSpreadsheet({
+    const xml = generateXmlSpreadsheet({
       title: "OniSource — Prospecção de Clientes",
       subtitle: `Produto: ${product} | Localização: ${location}`,
       sheetName: "Prospectos",
@@ -130,14 +138,16 @@ export async function GET(
       ],
       rows,
     });
+    const file = convertXmlSpreadsheetToXlsx(xml);
     const date = new Date(salesSearch.created_at ?? Date.now())
       .toISOString()
       .slice(0, 10);
-    const filename = `OniSource_Vendas_${filenamePart(product)}_${filenamePart(location)}_${date}.xml`;
+    const filename = `OniSource_Vendas_${filenamePart(product)}_${filenamePart(location)}_${date}.xlsx`;
 
     return new Response(file, {
       headers: {
-        "Content-Type": "application/vnd.ms-excel",
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });
