@@ -4,17 +4,7 @@ import test from "node:test";
 import {
   extractJsonArray,
   extractJsonValue,
-  repairTruncatedJsonObject,
 } from "../src/lib/gemini-results.ts";
-
-test("repairs a truncated classification at the last complete property", () => {
-  assert.equal(
-    repairTruncatedJsonObject(
-      '```json\n{"role":"TRADER","confidence":"HIGH","reasoning":"cut off',
-    ),
-    '{"role":"TRADER","confidence":"HIGH"}',
-  );
-});
 
 test("extracts a classification object from a json markdown fence", () => {
   assert.equal(

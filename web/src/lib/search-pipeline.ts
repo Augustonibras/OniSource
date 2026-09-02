@@ -1,9 +1,6 @@
 import industrialDirectories from "../../../config/industrial_directories.json";
 
-import {
-  extractJsonValue,
-  repairTruncatedJsonObject,
-} from "./gemini-results";
+import { extractJsonValue } from "./gemini-results";
 import {
   renderClassifierV9Prompt,
   type ClassifierPromptInput,
@@ -339,7 +336,7 @@ async function classifyDomain(
       generationConfig: {
         temperature: 0,
         responseMimeType: "application/json",
-        maxOutputTokens: 4096,
+        maxOutputTokens: 2048,
       },
     }),
   });
@@ -359,36 +356,12 @@ async function classifyDomain(
   if (!text?.trim()) {
     throw new SearchPipelineError("Gemini returned an empty classification.", 502);
   }
-  const tokensUsed =
-    (data.usageMetadata?.promptTokenCount ?? 0) +
-    (data.usageMetadata?.candidatesTokenCount ?? 0);
   const jsonText = extractJsonValue(text);
-  let parsed: unknown = null;
-  let truncated = false;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(jsonText ?? "");
   } catch {
-    truncated = true;
-    const repaired = repairTruncatedJsonObject(text);
-    if (repaired) {
-      try {
-        parsed = JSON.parse(repaired);
-      } catch {
-        parsed = null;
-      }
-    }
-  }
-  if (truncated && !isClassifierResponse(parsed)) {
-    console.warn(
-      `Gemini truncated response for ${evidence.urls[0] ?? evidence.domain}, result discarded`,
-    );
-    return {
-      classification: null,
-      citationVerified: false,
-      evidenceTruncated: rendered.evidenceTruncated,
-      budgetedEvidence: rendered.evidence,
-      tokensUsed,
-    };
+    throw new SearchPipelineError("Gemini returned invalid classification JSON.", 502);
   }
   if (!isClassifierResponse(parsed)) {
     throw new SearchPipelineError("Gemini returned an invalid classification.", 502);
@@ -401,7 +374,9 @@ async function classifyDomain(
       normalizedWhitespace(rendered.evidence).includes(normalizedCitation),
     evidenceTruncated: rendered.evidenceTruncated,
     budgetedEvidence: rendered.evidence,
-    tokensUsed,
+    tokensUsed:
+      (data.usageMetadata?.promptTokenCount ?? 0) +
+      (data.usageMetadata?.candidatesTokenCount ?? 0),
   };
 }
 
@@ -428,10 +403,7 @@ async function classifyEvidence(
     })),
   );
   const results = classified.flatMap((item) => {
-    if (
-      !item.classification ||
-      !SUPPLIER_ROLES.includes(item.classification.role as SupplierRole)
-    ) {
+    if (!SUPPLIER_ROLES.includes(item.classification.role as SupplierRole)) {
       return [];
     }
     const signals = extractEvidenceSignals(item.evidence.content);
