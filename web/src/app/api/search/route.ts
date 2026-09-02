@@ -1,17 +1,19 @@
 import { resolveMP } from "@/data/mp-codes";
-import {
-  CONFIDENCE_LEVELS,
-  runSearchPipeline,
-  SearchPipelineError,
-  SUPPLIER_ROLES,
-  type Confidence,
-  type SupplierResult,
-  type SupplierRole,
-} from "@/lib/search-pipeline";
-import { createServerSupabaseClient } from "@/lib/supabase-server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { createServerSupabaseClient } from "../../../lib/supabase-server";
+import { extractJsonArray } from "../../../lib/gemini-results";
+
 export const runtime = "nodejs";
+
+const GEMINI_ENDPOINT =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
+
+const ROLES = ["MANUFACTURER", "DISTRIBUTOR", "TRADER"] as const;
+const CONFIDENCE_LEVELS = ["HIGH", "MEDIUM", "LOW"] as const;
+
+type SupplierRole = (typeof ROLES)[number];
+type Confidence = (typeof CONFIDENCE_LEVELS)[number];
 
 interface SearchFilters {
   excludeCountries?: string[];
@@ -25,6 +27,27 @@ interface SearchRequest {
   userEmail: string;
   exclude?: string[];
   forceRefresh?: boolean;
+}
+
+interface SupplierResult {
+  company_name: string;
+  website: string;
+  country: string;
+  role: SupplierRole;
+  confidence: Confidence;
+  notes: string;
+}
+
+interface GeminiResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{ text?: string }>;
+    };
+  }>;
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+  };
 }
 
 interface SavedSearchResult {
@@ -44,25 +67,105 @@ function errorResponse(error: string, status: number, details?: string) {
   );
 }
 
-function normalizeStrings(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
+function normalizeCountries(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
   return value
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
+    .filter((country): country is string => typeof country === "string")
+    .map((country) => country.trim())
     .filter(Boolean);
 }
 
+function normalizeCompanyNames(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((company): company is string => typeof company === "string")
+    .map((company) => company.trim())
+    .filter(Boolean);
+}
+
+function formatCountries(countries: string[], fallback: string) {
+  return countries.length > 0 ? countries.join(", ") : fallback;
+}
+
+function buildPrompt(
+  query: string,
+  filters: Required<SearchFilters>,
+  mpCode: number | null,
+  excludedCompanies: string[],
+) {
+  const mpContext =
+    mpCode === null
+      ? ""
+      : `\nThe user searched by internal code MP ${mpCode}, which corresponds to: ${query}. Search for suppliers of this product.`;
+  const exclusionInstruction =
+    excludedCompanies.length === 0
+      ? ""
+      : `\nIMPORTANT: Do NOT include any of these companies in your results: ${excludedCompanies.join(", ")}. Find OTHER suppliers not in this list.\n`;
+
+  return `You are OniSource, a chemical sourcing intelligence engine.
+
+IMPORTANT: All text fields in your response MUST be written in Brazilian Portuguese (pt-BR). This includes the 'note' field, company descriptions, and any other text. Do NOT write in English.
+
+The user is searching for suppliers of: "${query}"${mpContext}
+
+Filters applied:
+- Exclude countries: ${formatCountries(filters.excludeCountries, "none")}
+- Search only in countries: ${formatCountries(filters.onlyCountries, "all")}
+- Brazil only: ${filters.brazilOnly}
+${exclusionInstruction}
+
+Instructions:
+1. Identify 8-15 potential suppliers (companies) for this product worldwide, respecting the country filters.
+2. For each supplier, provide:
+   - company_name
+   - website (if known)
+   - country
+   - role: one of MANUFACTURER, DISTRIBUTOR, TRADER (use these definitions: MANUFACTURER = company that produces the product in own facilities; DISTRIBUTOR = authorized reseller of identified manufacturer brands; TRADER = intermediary, trading company, or company whose production cannot be verified)
+   - confidence: HIGH, MEDIUM, or LOW
+   - notes: one sentence about why this supplier is relevant
+3. Rank results: MANUFACTURER first, then DISTRIBUTOR, then TRADER. Within each group, HIGH confidence first.
+4. Respond ONLY with a valid JSON array. No markdown, no backticks, no preamble. Example format:
+[{"company_name":"...","website":"...","country":"...","role":"MANUFACTURER","confidence":"HIGH","notes":"..."}]`;
+}
+
 function isSupplierResult(value: unknown): value is SupplierResult {
-  if (!value || typeof value !== "object") return false;
-  const result = value as Record<string, unknown>;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
   return (
-    typeof result.company_name === "string" &&
-    typeof result.website === "string" &&
-    typeof result.country === "string" &&
-    typeof result.notes === "string" &&
-    SUPPLIER_ROLES.includes(result.role as SupplierRole) &&
-    CONFIDENCE_LEVELS.includes(result.confidence as Confidence)
+    typeof candidate.company_name === "string" &&
+    typeof candidate.website === "string" &&
+    typeof candidate.country === "string" &&
+    typeof candidate.notes === "string" &&
+    ROLES.includes(candidate.role as SupplierRole) &&
+    CONFIDENCE_LEVELS.includes(candidate.confidence as Confidence)
   );
+}
+
+function parseResults(text: string): SupplierResult[] {
+  const jsonArray = extractJsonArray(text);
+  if (!jsonArray) {
+    throw new Error("Gemini response does not contain a JSON array.");
+  }
+
+  const parsed: unknown = JSON.parse(jsonArray);
+  if (!Array.isArray(parsed) || !parsed.every(isSupplierResult)) {
+    throw new Error("Gemini returned an invalid supplier result array.");
+  }
+  return parsed;
+}
+
+function sanitizedErrorMessage(error: unknown, apiKey: string) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replaceAll(apiKey, "***");
 }
 
 async function recordSearchHistory(
@@ -84,6 +187,7 @@ async function recordSearchHistory(
 
 export async function POST(request: Request) {
   let body: SearchRequest;
+
   try {
     body = (await request.json()) as SearchRequest;
   } catch {
@@ -95,16 +199,18 @@ export async function POST(request: Request) {
     typeof body.userEmail === "string"
       ? body.userEmail.trim().toLowerCase()
       : "";
+
   if (!query || !userEmail) {
     return errorResponse("Query and userEmail are required.", 400);
   }
 
   const filters: Required<SearchFilters> = {
-    excludeCountries: normalizeStrings(body.filters?.excludeCountries),
-    onlyCountries: normalizeStrings(body.filters?.onlyCountries),
+    excludeCountries: normalizeCountries(body.filters?.excludeCountries),
+    onlyCountries: normalizeCountries(body.filters?.onlyCountries),
     brazilOnly: body.filters?.brazilOnly === true,
   };
-  const excludedCompanies = normalizeStrings(body.exclude);
+  const excludedCompanies = normalizeCompanyNames(body.exclude);
+
   if (filters.brazilOnly) {
     filters.excludeCountries = [];
     filters.onlyCountries = [];
@@ -139,6 +245,7 @@ export async function POST(request: Request) {
       .gte("created_at", sevenDaysAgo)
       .order("created_at", { ascending: false })
       .limit(10);
+
     if (cacheError) {
       console.error("Unable to check the saved search result cache.", cacheError);
     } else {
@@ -149,6 +256,7 @@ export async function POST(request: Request) {
           Array.isArray(row.results) &&
           row.results.every(isSupplierResult),
       );
+
       if (cachedResult) {
         const cachedResults = cachedResult.results as SupplierResult[];
         const { error: historyError } = await recordSearchHistory(
@@ -162,6 +270,7 @@ export async function POST(request: Request) {
         if (historyError) {
           console.error("Unable to record cached search history.", historyError);
         }
+
         return Response.json({
           results: cachedResults,
           tokens_used: 0,
@@ -175,35 +284,70 @@ export async function POST(request: Request) {
     }
   }
 
-  const tavilyApiKey = process.env.TAVILY_API_KEY;
-  const geminiApiKey = process.env.GEMINI_API_KEY;
-  if (!tavilyApiKey) {
-    return errorResponse("TAVILY_API_KEY was not found in the environment.", 500);
-  }
-  if (!geminiApiKey) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
     return errorResponse("GEMINI_API_KEY was not found in the environment.", 500);
   }
 
+  const prompt = buildPrompt(resolved, filters, mpCode, excludedCompanies);
+  let geminiData: GeminiResponse;
   let results: SupplierResult[];
-  let tokensUsed: number;
+
   try {
-    const pipeline = await runSearchPipeline({
-      productContext: resolved,
-      filters,
-      excludedCompanies,
-      tavilyApiKey,
-      geminiApiKey,
+    const endpoint = new URL(GEMINI_ENDPOINT);
+    endpoint.searchParams.set("key", apiKey);
+    const geminiResponse = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 8192 },
+      }),
     });
-    results = pipeline.results;
-    tokensUsed = pipeline.tokensUsed;
-  } catch (error) {
-    if (error instanceof SearchPipelineError) {
-      return errorResponse(error.message, error.status);
+
+    if (!geminiResponse.ok) {
+      if (geminiResponse.status === 429) {
+        return errorResponse("Gemini rate limit exceeded.", 429);
+      }
+      if (geminiResponse.status === 503) {
+        return errorResponse("Gemini is temporarily unavailable.", 503);
+      }
+      return errorResponse("Gemini request failed.", geminiResponse.status);
     }
-    return errorResponse("Erro interno na busca.", 500);
+
+    geminiData = (await geminiResponse.json()) as GeminiResponse;
+    const parts = geminiData.candidates?.[0]?.content?.parts;
+    if (!parts || parts.length === 0 || !parts[0]?.text?.trim()) {
+      return errorResponse(
+        "O modelo não retornou resultados. Tente uma busca mais específica.",
+        422,
+      );
+    }
+
+    const responseText = parts[0].text;
+
+    try {
+      results = parseResults(responseText);
+    } catch {
+      return errorResponse(
+        "Não foi possível processar a resposta. Tente reformular a busca.",
+        422,
+        responseText.slice(0, 200),
+      );
+    }
+  } catch (error) {
+    return errorResponse(
+      "Erro interno na busca.",
+      500,
+      sanitizedErrorMessage(error, apiKey),
+    );
   }
 
+  const tokensUsed =
+    (geminiData.usageMetadata?.promptTokenCount ?? 0) +
+    (geminiData.usageMetadata?.candidatesTokenCount ?? 0);
   let savedSearchResult: { id: string; created_at: string } | null = null;
+
   if (supabase) {
     const { data, error } = await supabase
       .from("search_results")
@@ -218,6 +362,7 @@ export async function POST(request: Request) {
       })
       .select("id,created_at")
       .single();
+
     if (error) {
       console.error("Unable to save the search result for reuse.", error);
     } else {
@@ -235,7 +380,10 @@ export async function POST(request: Request) {
       results,
       tokensUsed,
     );
-    if (error) console.error("Unable to record search history.", error);
+
+    if (error) {
+      console.error("Unable to record search history.", error);
+    }
   } catch (error) {
     console.error("Unable to record search history.", error);
   }
