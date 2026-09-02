@@ -1,4 +1,3 @@
-import { filterSalesResultsByLocation } from "@/lib/sales-geography";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -33,14 +32,7 @@ export async function GET(
     if (!data) {
       return errorResponse("Sales result not found.", 404);
     }
-    const results = Array.isArray(data.results)
-      ? filterSalesResultsByLocation(
-          data.results,
-          String(data.location_type ?? ""),
-          String(data.location_value ?? ""),
-        )
-      : data.results;
-    return Response.json({ result: { ...data, results } });
+    return Response.json({ result: data });
   } catch {
     return errorResponse("Unable to load the saved sales result.", 500);
   }

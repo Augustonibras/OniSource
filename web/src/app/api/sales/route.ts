@@ -5,10 +5,6 @@ import {
   CONTINENTS,
 } from "@/data/onibras-catalog";
 import { extractJsonArray } from "@/lib/gemini-results";
-import {
-  filterSalesResultsByLocation,
-  isSouthAmericaLocation,
-} from "@/lib/sales-geography";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -102,15 +98,11 @@ function buildPrompt(
   productMarket: string,
   location: string,
   excludedCompanies: string[],
-  excludeBrazil: boolean,
 ) {
   const excludeInstruction =
     excludedCompanies.length > 0
       ? `IMPORTANT: Do NOT include any of these companies: ${excludedCompanies.join(", ")}. Find OTHER potential customers not in this list.`
       : "";
-  const brazilInstruction = excludeBrazil
-    ? "IMPORTANT: Do NOT include companies located in Brazil. Return only potential customers from other South American countries."
-    : "";
 
   return `You are a sales intelligence assistant for OniBras Produtos Químicos, a Brazilian specialty chemical company.
 
@@ -139,7 +131,6 @@ For each potential customer found, provide:
 - note: Brief description in Brazilian Portuguese of why this company is a potential customer, mentioning their industry and relevance
 
 ${excludeInstruction}
-${brazilInstruction}
 
 IMPORTANT: All text fields in your response MUST be written in Brazilian Portuguese (pt-BR).
 
@@ -232,7 +223,6 @@ export async function POST(request: Request) {
   const locationValue = body.locationValue?.trim() ?? "";
   const userEmail = body.userEmail?.trim().toLowerCase() ?? "";
   const excludedCompanies = normalizeNames(body.exclude);
-  const excludeBrazil = isSouthAmericaLocation(locationType ?? "", locationValue);
 
   if (
     !product ||
@@ -262,16 +252,11 @@ export async function POST(request: Request) {
       locationValue,
     );
     if (cachedResult) {
-      const cachedResults = filterSalesResultsByLocation(
-        cachedResult.results as ProspectResult[],
-        locationType,
-        locationValue,
-      );
       return Response.json({
-        results: cachedResults,
+        results: cachedResult.results as ProspectResult[],
         salesSearchId: cachedResult.id,
         cached: true,
-        resultCount: cachedResults.length,
+        resultCount: (cachedResult.results as ProspectResult[]).length,
         createdAt: cachedResult.created_at,
       });
     }
@@ -289,7 +274,6 @@ export async function POST(request: Request) {
     productMarket,
     locationDescription(locationType, locationValue),
     excludedCompanies,
-    excludeBrazil,
   );
   let results: ProspectResult[];
 
@@ -322,11 +306,7 @@ export async function POST(request: Request) {
     }
 
     try {
-      results = filterSalesResultsByLocation(
-        parseResults(parts[0].text),
-        locationType,
-        locationValue,
-      );
+      results = parseResults(parts[0].text);
     } catch {
       return errorResponse(
         "Não foi possível processar a resposta. Tente reformular a busca.",
