@@ -80,6 +80,17 @@ export async function POST(request: Request) {
 
   try {
     const supabase = createServerSupabaseClient();
+    const { data: existing, error: lookupError } = await supabase
+      .from("prospect_annotations")
+      .select("id")
+      .eq("sales_search_id", salesSearchId)
+      .eq("prospect_name", prospectName)
+      .limit(1)
+      .maybeSingle();
+    if (lookupError) {
+      return errorResponse("Unable to save prospect annotation.", 500);
+    }
+
     const values = {
       sales_search_id: salesSearchId,
       prospect_name: prospectName,
@@ -90,11 +101,13 @@ export async function POST(request: Request) {
       user_email: userEmail,
       updated_at: new Date().toISOString(),
     };
-    const { data, error } = await supabase
-      .from("prospect_annotations")
-      .insert(values)
-      .select("*")
-      .single();
+    const query = existing
+      ? supabase
+          .from("prospect_annotations")
+          .update(values)
+          .eq("id", existing.id)
+      : supabase.from("prospect_annotations").insert(values);
+    const { data, error } = await query.select("*").single();
     if (error) {
       return errorResponse("Unable to save prospect annotation.", 500);
     }
