@@ -92,7 +92,8 @@ export async function GET(
     const { data: annotations, error: annotationsError } = await supabase
       .from("supplier_annotations")
       .select("supplier_name,status,note")
-      .eq("search_result_id", id);
+      .eq("search_result_id", id)
+      .order("created_at", { ascending: true });
 
     if (annotationsError) {
       return errorResponse("Unable to load supplier annotations.", 500);
