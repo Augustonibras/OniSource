@@ -51,24 +51,3 @@ test("migration 005 restores the search cache columns idempotently", async () =>
     /CREATE INDEX IF NOT EXISTS idx_search_results_product_cache/i,
   );
 });
-
-test("domain classification cache is product-aware, versioned, and protected by RLS", async () => {
-  const migration = await readFile(
-    "supabase/migrations/006_domain_classification_cache.sql",
-    "utf8",
-  );
-  const route = await readFile("src/app/api/search/route.ts", "utf8");
-
-  assert.match(migration, /CREATE TABLE public\.domain_classification_cache/i);
-  assert.match(
-    migration,
-    /PRIMARY KEY \(product_cache_key, domain, prompt_version\)/i,
-  );
-  assert.match(
-    migration,
-    /ALTER TABLE public\.domain_classification_cache ENABLE ROW LEVEL SECURITY/i,
-  );
-  assert.match(route, /\.from\("domain_classification_cache"\)/);
-  assert.match(route, /CLASSIFIER_V9_PROMPT_VERSION/);
-  assert.match(route, /CLASSIFICATION_CACHE_TTL_MS/);
-});

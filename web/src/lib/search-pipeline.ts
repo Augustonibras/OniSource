@@ -131,24 +131,12 @@ interface GeminiResponse {
   };
 }
 
-export interface ClassifierResponse {
+interface ClassifierResponse {
   role: ClassifierRole;
   confidence: Confidence;
   citation: string;
   reasoning: string;
   needs_review: boolean;
-}
-
-export interface DomainClassificationCacheEntry {
-  domain: string;
-  classification: ClassifierResponse;
-  citationVerified: boolean;
-  evidenceTruncated: boolean;
-}
-
-export interface DomainClassificationCache {
-  load(domains: string[]): Promise<DomainClassificationCacheEntry[]>;
-  save(entries: DomainClassificationCacheEntry[]): Promise<void>;
 }
 
 interface DomainEvidence {
@@ -499,44 +487,21 @@ async function classifyEvidence(
   geminiApiKey: string,
   fetchImpl: FetchImplementation,
   deadline: number,
-  classificationCache: DomainClassificationCache | undefined,
+  cachedResultsByDomain: Map<string, SupplierResult>,
   batchLabel: "round_one" | "round_two",
 ) {
   const startedAt = performance.now();
-  const cachedByDomain = new Map<string, DomainClassificationCacheEntry>();
-  if (classificationCache && evidenceItems.length > 0) {
-    try {
-      const cached = await classificationCache.load(
-        evidenceItems.map((evidence) => evidence.domain),
-      );
-      for (const entry of cached) {
-        if (isClassifierResponse(entry.classification)) {
-          cachedByDomain.set(entry.domain, entry);
-        }
-      }
-    } catch (error) {
-      console.warn("Domain classification cache read failed.", {
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  }
-  const cachedClassifications: ClassifiedDomain[] = [];
+  const cachedResults: SupplierResult[] = [];
   const pendingEvidence = evidenceItems.filter((evidence) => {
-    const cached = cachedByDomain.get(evidence.domain);
+    const cached = cachedResultsByDomain.get(evidence.domain);
     if (!cached) return true;
-    cachedClassifications.push({
-      evidence,
-      classification: cached.classification,
-      citationVerified: cached.citationVerified,
-      evidenceTruncated: cached.evidenceTruncated,
-      tokensUsed: 0,
-    });
+    cachedResults.push(cached);
     return false;
   });
   console.info("Search pipeline classification started", {
     batch: batchLabel,
     domainCount: evidenceItems.length,
-    cacheHits: cachedClassifications.length,
+    cacheHits: cachedResults.length,
     pendingCount: pendingEvidence.length,
   });
   const classified = await mapWithConcurrency(
@@ -583,36 +548,13 @@ async function classifyEvidence(
     stage: "classification_batch",
     batch: batchLabel,
     domainCount: evidenceItems.length,
-    cacheHits: cachedClassifications.length,
+    cacheHits: cachedResults.length,
     durationMs: elapsedMs(startedAt),
   });
   const completed = classified.filter(
     (item): item is ClassifiedDomain => item !== undefined,
   );
-  if (classificationCache && completed.length > 0 && remainingMs(deadline) > 0) {
-    try {
-      await classificationCache.save(
-        completed.flatMap((item) =>
-          item.classification
-            ? [
-                {
-                  domain: item.evidence.domain,
-                  classification: item.classification,
-                  citationVerified: item.citationVerified,
-                  evidenceTruncated: item.evidenceTruncated,
-                },
-              ]
-            : [],
-        ),
-      );
-    } catch (error) {
-      console.warn("Domain classification cache write failed.", {
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  }
-  const allClassifications = [...cachedClassifications, ...completed];
-  const results = allClassifications.flatMap((item) => {
+  const results = completed.flatMap((item) => {
     if (
       !item.classification ||
       !SUPPLIER_ROLES.includes(item.classification.role as SupplierRole)
@@ -659,7 +601,7 @@ async function classifyEvidence(
     ];
   });
   return {
-    results,
+    results: [...cachedResults, ...results],
     tokensUsed: completed.reduce((sum, item) => sum + item.tokensUsed, 0),
     durationMs: elapsedMs(startedAt),
   };
@@ -678,7 +620,7 @@ export async function runSearchPipeline(
     geminiApiKey: string;
     priorFeedbackResults?: SupplierResult[];
     irrelevantCompanies?: string[];
-    classificationCache?: DomainClassificationCache;
+    cachedDomainResults?: SupplierResult[];
     timeBudgetMs?: number;
   },
   fetchImpl: FetchImplementation = fetch,
@@ -689,6 +631,13 @@ export async function runSearchPipeline(
   const irrelevant = new Set(
     (input.irrelevantCompanies ?? []).map(normalizeCompanyName),
   );
+  const cachedResultsByDomain = new Map<string, SupplierResult>();
+  for (const result of input.cachedDomainResults ?? []) {
+    const domain = normalizeResultDomain(result.website);
+    if (domain && !cachedResultsByDomain.has(domain)) {
+      cachedResultsByDomain.set(domain, result);
+    }
+  }
   const exclusions = [
     ...input.excludedCompanies,
     ...(input.irrelevantCompanies ?? []),
@@ -715,7 +664,7 @@ export async function runSearchPipeline(
     input.geminiApiKey,
     fetchImpl,
     deadline,
-    input.classificationCache,
+    cachedResultsByDomain,
     "round_one",
   );
 
@@ -759,7 +708,7 @@ export async function runSearchPipeline(
       input.geminiApiKey,
       fetchImpl,
       deadline,
-      input.classificationCache,
+      cachedResultsByDomain,
       "round_two",
     );
   }
