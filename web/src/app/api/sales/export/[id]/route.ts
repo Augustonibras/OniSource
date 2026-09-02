@@ -1,4 +1,5 @@
 import { generateXmlSpreadsheet } from "@/lib/xml-spreadsheet";
+import { convertXmlSpreadsheetToXlsx } from "@/lib/xlsx-spreadsheet";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -114,7 +115,7 @@ export async function GET(
 
     const product = String(salesSearch.product_name ?? "produto");
     const location = String(salesSearch.location_value ?? "local");
-    const file = generateXmlSpreadsheet({
+    const xml = generateXmlSpreadsheet({
       title: "OniSource — Prospecção de Clientes",
       subtitle: `Produto: ${product} | Localização: ${location}`,
       sheetName: "Prospectos",
@@ -130,14 +131,16 @@ export async function GET(
       ],
       rows,
     });
+    const file = convertXmlSpreadsheetToXlsx(xml);
     const date = new Date(salesSearch.created_at ?? Date.now())
       .toISOString()
       .slice(0, 10);
-    const filename = `OniSource_Vendas_${filenamePart(product)}_${filenamePart(location)}_${date}.xml`;
+    const filename = `OniSource_Vendas_${filenamePart(product)}_${filenamePart(location)}_${date}.xlsx`;
 
     return new Response(file, {
       headers: {
-        "Content-Type": "application/vnd.ms-excel",
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });
