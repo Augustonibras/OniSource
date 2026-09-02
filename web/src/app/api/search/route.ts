@@ -5,11 +5,6 @@ import {
   SEARCH_TIME_BUDGET_MS,
 } from "@/lib/search-execution";
 import { calculateEvidenceScore } from "@/lib/search-quality";
-import {
-  hasMinimumEvidenceScore,
-  isBlockedCompanyDomain,
-  isClearlyNonCompanyTitle,
-} from "@/lib/search-result-quality";
 import { CLASSIFIER_V9_PROMPT_VERSION } from "@/lib/prompts/classifier-v9";
 import {
   CONFIDENCE_LEVELS,
@@ -103,14 +98,6 @@ function normalizeCompanyName(value: string) {
   return value.trim().toLocaleLowerCase("pt-BR");
 }
 
-function isDisplayableResult(result: SupplierResult) {
-  return (
-    hasMinimumEvidenceScore(result.evidence_score) &&
-    !isBlockedCompanyDomain(result.website) &&
-    !isClearlyNonCompanyTitle(result.company_name)
-  );
-}
-
 function feedbackRole(feedback: ClassificationFeedback): SupplierRole | null {
   if (feedback === "MANUFACTURER_CONFIRMED") return "MANUFACTURER";
   if (feedback === "DISTRIBUTOR_CONFIRMED") return "DISTRIBUTOR";
@@ -193,7 +180,7 @@ async function loadHumanFeedback(
   for (const row of savedRows) {
     if (!Array.isArray(row.results)) continue;
     for (const result of row.results) {
-      if (isSupplierResult(result) && isDisplayableResult(result)) {
+      if (isSupplierResult(result)) {
         resultByName.set(normalizeCompanyName(result.company_name), result);
       }
     }
@@ -333,34 +320,27 @@ async function handleSearchRequest(request: Request, requestStartedAt: number) {
           row.results.every(isSupplierResult),
       );
       if (cachedResult) {
-        const cachedResults = (cachedResult.results as SupplierResult[]).filter(
-          isDisplayableResult,
+        const cachedResults = cachedResult.results as SupplierResult[];
+        const { error: historyError } = await recordSearchHistory(
+          supabase,
+          userEmail,
+          query,
+          filters,
+          cachedResults,
+          0,
         );
-        if (cachedResults.length > 0) {
-          const { error: historyError } = await recordSearchHistory(
-            supabase,
-            userEmail,
-            query,
-            filters,
-            cachedResults,
-            0,
-          );
-          if (historyError) {
-            console.error(
-              "Unable to record cached search history.",
-              historyError,
-            );
-          }
-          return Response.json({
-            results: cachedResults,
-            tokens_used: 0,
-            resolvedQuery: cachedResult.resolved_query ?? resolved,
-            mpCode: cachedResult.mp_code,
-            searchResultId: cachedResult.id,
-            cached: true,
-            createdAt: cachedResult.created_at,
-          });
+        if (historyError) {
+          console.error("Unable to record cached search history.", historyError);
         }
+        return Response.json({
+          results: cachedResults,
+          tokens_used: 0,
+          resolvedQuery: cachedResult.resolved_query ?? resolved,
+          mpCode: cachedResult.mp_code,
+          searchResultId: cachedResult.id,
+          cached: true,
+          createdAt: cachedResult.created_at,
+        });
       }
     }
   }

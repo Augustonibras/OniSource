@@ -1,7 +1,7 @@
 export const SEARCH_TIME_BUDGET_MS = 45_000;
 export const CLASSIFICATION_TIMEOUT_MS = 8_000;
 export const CLASSIFICATION_CONCURRENCY = 5;
-export const MAX_CLASSIFIED_DOMAINS = 30;
+export const MAX_CLASSIFIED_DOMAINS = 20;
 export const CLASSIFICATION_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function remainingMs(deadline: number) {
