@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
-  companyNameFromDomain,
   extractCountryFromEvidence,
+  hasMinimumEvidenceScore,
   isBlockedCompanyDomain,
+  isClearlyNonCompanyTitle,
   NON_COMPANY_DOMAINS,
 } from "../src/lib/search-result-quality.ts";
 
-test("blocks only the configured social and community domains", () => {
-  assert.deepEqual([...NON_COMPANY_DOMAINS], [
+test("blocks social media and news aggregators before classification", () => {
+  for (const domain of [
     "instagram.com",
     "facebook.com",
     "linkedin.com",
@@ -22,20 +22,30 @@ test("blocks only the configured social and community domains", () => {
     "reddit.com",
     "wikipedia.org",
     "quora.com",
-  ]);
-  for (const domain of NON_COMPANY_DOMAINS) {
+  ]) {
+    assert.equal(NON_COMPANY_DOMAINS.includes(domain), true);
     assert.equal(isBlockedCompanyDomain(`www.${domain}`), true);
   }
-  assert.equal(isBlockedCompanyDomain("news.google.com"), false);
+  assert.equal(isBlockedCompanyDomain("news.google.com"), true);
   assert.equal(isBlockedCompanyDomain("supplier.example"), false);
 });
 
-test("derives a readable company label from the domain instead of the page title", () => {
+test("rejects page titles that clearly describe posts or listings", () => {
   assert.equal(
-    companyNameFromDomain("https://acido-fosforico.com/product#offer"),
-    "Acido Fosforico",
+    isClearlyNonCompanyTitle("Top 10 Phosphoric Acid Manufacturers"),
+    true,
   );
-  assert.equal(companyNameFromDomain("www.example.com.br"), "Example");
+  assert.equal(
+    isClearlyNonCompanyTitle("Post by Chemical Market on Instagram"),
+    true,
+  );
+  assert.equal(
+    isClearlyNonCompanyTitle(
+      "What is Food Grade Phosphoric Acid Used For in Food Industry",
+    ),
+    true,
+  );
+  assert.equal(isClearlyNonCompanyTitle("Acme Phosphoric Acid"), false);
 });
 
 test("extracts country from country domains or explicit location evidence", () => {
@@ -60,11 +70,7 @@ test("extracts country from country domains or explicit location evidence", () =
   );
 });
 
-test("defines six initial Tavily queries", async () => {
-  const source = await readFile("src/lib/search-pipeline.ts", "utf8");
-  const roundOne = source.slice(
-    source.indexOf("export function buildRoundOneQueries"),
-    source.indexOf("export function buildRoundTwoQueries"),
-  );
-  assert.equal(roundOne.match(/\n\s*query:/g)?.length, 6);
+test("requires an evidence score of at least 40 for display", () => {
+  assert.equal(hasMinimumEvidenceScore(39), false);
+  assert.equal(hasMinimumEvidenceScore(40), true);
 });

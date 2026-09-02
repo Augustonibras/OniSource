@@ -8,8 +8,21 @@ export const NON_COMPANY_DOMAINS = [
   "tiktok.com",
   "pinterest.com",
   "reddit.com",
+  "scribd.com",
   "wikipedia.org",
   "quora.com",
+  "news.google.com",
+  "news.yahoo.com",
+  "newsbreak.com",
+  "flipboard.com",
+  "ground.news",
+  "smartnews.com",
+  "msn.com",
+  "feedly.com",
+  "prnewswire.com",
+  "businesswire.com",
+  "globenewswire.com",
+  "einpresswire.com",
 ] as const;
 
 const GENERICIZED_COUNTRY_DOMAINS = new Set([
@@ -99,21 +112,16 @@ export function isBlockedCompanyDomain(value: string) {
   );
 }
 
-export function companyNameFromDomain(value: string) {
-  const labels = normalizedDomain(value).split(".").filter(Boolean);
-  const countrySuffix = labels.at(-1)?.length === 2;
-  const secondLevel = labels.at(-2) ?? "";
-  const baseIndex =
-    countrySuffix && /^(?:co|com|net|org)$/.test(secondLevel)
-      ? labels.length - 3
-      : labels.length - 2;
-  const base = labels[Math.max(0, baseIndex)] ?? normalizedDomain(value);
-  return base
-    .replace(/[-_]+/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) => word[0].toUpperCase() + word.slice(1))
-    .join(" ");
+export function isClearlyNonCompanyTitle(title: string) {
+  const value = title.trim();
+  return [
+    /\b(?:post|reel|photo|video)\b.*\b(?:instagram|facebook|linkedin|tiktok|twitter|x)\b/i,
+    /^(?:how|what|when|where|why)\b.+\?*$/i,
+    /^(?:top|best)\s+\d+\b/i,
+    /\b(?:list|directory|database)\s+of\s+(?:companies|distributors|manufacturers|suppliers)\b/i,
+    /\b(?:companies|distributors|manufacturers|suppliers)\s+(?:database|directory|list)\b/i,
+    /\b(?:classified ad|market (?:forecast|outlook|report|size)|press release|sponsored (?:ad|listing|post))\b/i,
+  ].some((pattern) => pattern.test(value));
 }
 
 export function extractCountryFromEvidence(domain: string, content: string) {
@@ -143,4 +151,8 @@ export function extractCountryFromEvidence(domain: string, content: string) {
     }
   }
   return earliest?.country ?? "Não informado";
+}
+
+export function hasMinimumEvidenceScore(score: number) {
+  return score >= 40;
 }

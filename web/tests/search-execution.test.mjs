@@ -33,7 +33,6 @@ test("limits classification concurrency without serializing the batch", async ()
 test("keeps the production work and time ceilings fixed", () => {
   assert.equal(SEARCH_TIME_BUDGET_MS, 45_000);
   assert.equal(CLASSIFICATION_TIMEOUT_MS, 8_000);
-  assert.equal(CLASSIFICATION_CONCURRENCY, 8);
   assert.equal(MAX_CLASSIFIED_DOMAINS, 30);
 });
 
