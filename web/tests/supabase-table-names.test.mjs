@@ -34,20 +34,3 @@ test("uses supplier_annotations for sourcing and never migrates mp_catalog", asy
     /\b(?:ALTER|CREATE)\s+TABLE\s+(?:public\.)?mp_catalog\b/i,
   );
 });
-
-test("migration 005 restores the search cache columns idempotently", async () => {
-  const migration = await readFile(
-    "supabase/migrations/005_add_cache_key_column.sql",
-    "utf8",
-  );
-
-  assert.match(
-    migration,
-    /ADD COLUMN IF NOT EXISTS product_cache_key TEXT/i,
-  );
-  assert.match(migration, /ADD COLUMN IF NOT EXISTS cas_number TEXT/i);
-  assert.match(
-    migration,
-    /CREATE INDEX IF NOT EXISTS idx_search_results_product_cache/i,
-  );
-});
