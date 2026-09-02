@@ -1,3 +1,4 @@
+import { filterSalesResultsByLocation } from "@/lib/sales-geography";
 import { generateXmlSpreadsheet } from "@/lib/xml-spreadsheet";
 import { convertXmlSpreadsheetToXlsx } from "@/lib/xlsx-spreadsheet";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
@@ -95,9 +96,14 @@ export async function GET(
       annotationsByProspect.set(prospectKey(annotation.prospect_name), annotation);
     }
 
-    const prospects = Array.isArray(salesSearch.results)
+    const savedProspects = Array.isArray(salesSearch.results)
       ? (salesSearch.results as ProspectResult[])
       : [];
+    const prospects = filterSalesResultsByLocation(
+      savedProspects,
+      String(salesSearch.location_type ?? ""),
+      String(salesSearch.location_value ?? ""),
+    );
     const rows = prospects.map((prospect) => {
       const annotation = annotationsByProspect.get(prospectKey(prospect.company));
       const role = text(prospect.role);
