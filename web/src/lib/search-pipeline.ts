@@ -278,11 +278,6 @@ async function searchTavily(
     }),
   });
   if (!response.ok) {
-    const responseBody = (await response.text()).replaceAll(apiKey, "***");
-    console.error("Tavily search request failed.", {
-      status: response.status,
-      body: responseBody,
-    });
     throw new SearchPipelineError(
       response.status === 429
         ? "Tavily rate limit exceeded."
